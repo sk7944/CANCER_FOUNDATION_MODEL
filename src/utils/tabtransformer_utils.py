@@ -66,6 +66,14 @@ def prepare_clinical_data(clinical_df, categorical_columns=None):
         if 'age_at_initial_pathologic_diagnosis' in clinical_df.columns:
             clinical_df = clinical_df.copy()
             age_col = 'age_at_initial_pathologic_diagnosis'
+            
+            # Age 컬럼을 숫자로 변환 (문자열이나 invalid 값은 NaN으로)
+            clinical_df[age_col] = pd.to_numeric(clinical_df[age_col], errors='coerce')
+            
+            # NaN 값을 평균값으로 대체 또는 제거
+            age_median = clinical_df[age_col].median()
+            clinical_df[age_col] = clinical_df[age_col].fillna(age_median)
+            
             clinical_df['age_group'] = pd.cut(
                 clinical_df[age_col], 
                 bins=[0, 40, 50, 60, 70, 100], 
@@ -204,9 +212,79 @@ def prepare_methylation_data(methylation_df, variance_threshold=0.01):
     
     return methylation_tensor, list(high_var_probes)
 
+def load_cox_coefficients_by_omics(data_dir):
+    """
+    오믹스 유형별로 Cox 계수 parquet 파일들을 로드
+    
+    Args:
+        data_dir: 데이터 디렉토리 경로 (Path 객체 또는 문자열)
+    
+    Returns:
+        cox_coefficients_by_cancer: {cancer_type: {feature_name: coeff}} 딕셔너리
+        cox_coefficients: 평균 Cox 계수 {feature_name: avg_coeff} 딕셔너리
+    """
+    data_dir = Path(data_dir)
+    
+    # 오믹스 유형별 Cox 계수 파일들
+    cox_files = {
+        'expression': data_dir / 'cox_coefficients_expression.parquet',
+        'cnv': data_dir / 'cox_coefficients_cnv.parquet', 
+        'microrna': data_dir / 'cox_coefficients_microrna.parquet',
+        'mutations': data_dir / 'cox_coefficients_mutations.parquet',
+        'rppa': data_dir / 'cox_coefficients_rppa.parquet'
+    }
+    
+    cox_coefficients_by_cancer = {}
+    all_cancer_types = set()
+    
+    print("Cox 계수 파일 로드 중...")
+    for data_type, file_path in cox_files.items():
+        if file_path.exists():
+            cox_df = pd.read_parquet(file_path)
+            print(f"  ✅ {data_type}: {cox_df.shape[0]}개 특성, {cox_df.shape[1]}개 암 종류")
+            
+            # 각 암 종류별로 딕셔너리 생성
+            for cancer_type in cox_df.columns:
+                if cancer_type not in cox_coefficients_by_cancer:
+                    cox_coefficients_by_cancer[cancer_type] = {}
+                
+                # feature_name: coefficient 매핑
+                for feature_name in cox_df.index:
+                    # 데이터 유형 prefix 추가 (예: Expression_GENE1)
+                    full_feature_name = f"{data_type.capitalize()}_{feature_name}"
+                    cox_coefficients_by_cancer[cancer_type][full_feature_name] = cox_df.loc[feature_name, cancer_type]
+                
+                all_cancer_types.add(cancer_type)
+        else:
+            print(f"  ⚠️ {data_type}: 파일 없음")
+    
+    print(f"\n✅ Cox 계수 로드 완료:")
+    print(f"   암 종류: {len(all_cancer_types)}개")
+    if cox_coefficients_by_cancer:
+        print(f"   각 암별 특성 수: {len(list(cox_coefficients_by_cancer.values())[0])}개")
+    
+    # 모든 암 종류에 대한 평균 Cox 계수 계산
+    cox_coefficients = {}
+    if cox_coefficients_by_cancer:
+        all_features = set()
+        for cancer_dict in cox_coefficients_by_cancer.values():
+            all_features.update(cancer_dict.keys())
+        
+        for feature in all_features:
+            values = []
+            for cancer_dict in cox_coefficients_by_cancer.values():
+                if feature in cancer_dict:
+                    values.append(cancer_dict[feature])
+            if values:
+                cox_coefficients[feature] = np.mean(values)
+        
+        print(f"   평균 Cox 계수: {len(cox_coefficients)}개 특성")
+    
+    return cox_coefficients_by_cancer, cox_coefficients
+
 def load_cox_coefficients(cox_file_path):
     """
-    Cox 계수 파일 로드
+    단일 Cox 계수 파일 로드 (하위호환성)
     
     Args:
         cox_file_path: Cox 계수 pickle 파일 경로
