@@ -47,22 +47,44 @@ check_gpu() {
 
 # CoxTabTransformer 훈련 함수
 train_cox_model() {
+    local ensemble_mode=${1:-"single"}
     local log_file="$LOG_DIR/cox_tabtransformer_${TIMESTAMP}.log"
     local pid_file="$LOG_DIR/cox_training.pid"
     
     log_info "🧬 CoxTabTransformer 훈련 시작"
+    if [ "$ensemble_mode" = "ensemble" ]; then
+        log_info "🎯 앙상블 모드 활성화 (5개 시드)"
+    fi
     log_info "로그 파일: $log_file"
     
     # training 폴더로 이동하여 실행
     cd "$TRAINING_DIR"
-    nohup python "$PYTHON_SCRIPT" \
-        --model cox \
-        --epochs 50 \
-        --batch_size 32 \
-        --lr 1e-4 \
-        --data_dir "../../data/processed" \
-        --results_dir "../../results" \
-        > "$log_file" 2>&1 &
+    
+    # 앙상블 모드 여부에 따라 다른 명령 실행
+    if [ "$ensemble_mode" = "ensemble" ]; then
+        nohup python "$PYTHON_SCRIPT" \
+            --model cox \
+            --ensemble \
+            --n_seeds 5 \
+            --epochs 50 \
+            --batch_size 32 \
+            --lr 2e-5 \
+            --data_dir "../../data/processed" \
+            --results_dir "../../results" \
+            --checkpoint_dir "./checkpoints" \
+            --target_auc 0.85 \
+            > "$log_file" 2>&1 &
+    else
+        nohup python "$PYTHON_SCRIPT" \
+            --model cox \
+            --epochs 50 \
+            --batch_size 32 \
+            --lr 2e-5 \
+            --data_dir "../../data/processed" \
+            --results_dir "../../results" \
+            --checkpoint_dir "./checkpoints" \
+            > "$log_file" 2>&1 &
+    fi
     
     local cox_pid=$!
     echo $cox_pid > "$pid_file"
@@ -76,22 +98,44 @@ train_cox_model() {
 
 # MethylationTabTransformer 훈련 함수  
 train_methylation_model() {
+    local ensemble_mode=${1:-"single"}
     local log_file="$LOG_DIR/methylation_tabtransformer_${TIMESTAMP}.log"
     local pid_file="$LOG_DIR/methylation_training.pid"
     
     log_info "🔬 MethylationTabTransformer 훈련 시작"
+    if [ "$ensemble_mode" = "ensemble" ]; then
+        log_info "🎯 앙상블 모드 활성화 (5개 시드)"
+    fi
     log_info "로그 파일: $log_file"
     
     # training 폴더로 이동하여 실행
     cd "$TRAINING_DIR"
-    nohup python "$PYTHON_SCRIPT" \
-        --model methylation \
-        --epochs 30 \
-        --batch_size 16 \
-        --lr 5e-5 \
-        --data_dir "../../data/processed" \
-        --results_dir "../../results" \
-        > "$log_file" 2>&1 &
+    
+    # 앙상블 모드 여부에 따라 다른 명령 실행
+    if [ "$ensemble_mode" = "ensemble" ]; then
+        nohup python "$PYTHON_SCRIPT" \
+            --model methylation \
+            --ensemble \
+            --n_seeds 5 \
+            --epochs 30 \
+            --batch_size 16 \
+            --lr 2e-5 \
+            --data_dir "../../data/processed" \
+            --results_dir "../../results" \
+            --checkpoint_dir "./checkpoints" \
+            --target_auc 0.85 \
+            > "$log_file" 2>&1 &
+    else
+        nohup python "$PYTHON_SCRIPT" \
+            --model methylation \
+            --epochs 30 \
+            --batch_size 16 \
+            --lr 2e-5 \
+            --data_dir "../../data/processed" \
+            --results_dir "../../results" \
+            --checkpoint_dir "./checkpoints" \
+            > "$log_file" 2>&1 &
+    fi
     
     local meth_pid=$!
     echo $meth_pid > "$pid_file"
@@ -154,12 +198,12 @@ main() {
     
     case $mode in
         "cox")
-            train_cox_model
+            train_cox_model "$ensemble_mode"
             cox_pid=$?
             monitor_training $cox_pid "CoxTabTransformer"
             ;;
         "methylation") 
-            train_methylation_model
+            train_methylation_model "$ensemble_mode"
             meth_pid=$?
             monitor_training $meth_pid "MethylationTabTransformer"
             ;;
@@ -167,7 +211,7 @@ main() {
             log_info "🔄 순차 훈련: Cox → Methylation"
             
             # Cox 모델 먼저 훈련
-            train_cox_model
+            train_cox_model "$ensemble_mode"
             cox_pid=$?
             log_info "Cox 모델 훈련 완료 대기 중..."
             monitor_training $cox_pid "CoxTabTransformer"
@@ -178,7 +222,7 @@ main() {
                 sleep 5
                 
                 # Methylation 모델 훈련
-                train_methylation_model  
+                train_methylation_model "$ensemble_mode"  
                 meth_pid=$?
                 monitor_training $meth_pid "MethylationTabTransformer"
                 meth_result=$?
