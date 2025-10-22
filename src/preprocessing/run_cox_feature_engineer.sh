@@ -7,23 +7,24 @@
 # with optimized parallel processing settings.
 #
 # Usage:
-#   chmod +x run_cox_analysis.sh
-#   ./run_cox_analysis.sh
+#   cd src/preprocessing
+#   chmod +x run_cox_feature_engineer.sh
+#   ./run_cox_feature_engineer.sh
 #
 # Monitor progress:
 #   tail -f cox_analysis.log
 #
 # Stop execution:
-#   ps aux | grep cox_feature_engineering
+#   ps aux | grep cox_feature_engineer
 #   kill <PID>
 
 echo "🚀 Starting TCGA PANCAN Cox Regression Analysis..."
 echo "📅 Started at: $(date)"
 
 # Configuration
-DATA_DIR="../data/raw"
-OUTPUT_DIR="../data/processed"
-RESULTS_DIR="../results"
+DATA_DIR="../../data/raw"
+OUTPUT_DIR="../../data/processed"
+RESULTS_DIR="../../results"
 MAX_WORKERS=3                # Number of cancer types processed in parallel
 MIN_PATIENTS=20             # Minimum patients per cancer type
 P_THRESHOLD=0.05            # P-value significance threshold
@@ -37,7 +38,7 @@ USE_GPU=false               # Set to true to enable GPU acceleration
 SKIP_VISUALIZATION=true     # Skip plots for faster background execution
 
 # Build command
-CMD="python 01_cox_feature_engineering.py"
+CMD="python cox_feature_engineer.py"
 CMD="$CMD --data-dir $DATA_DIR"
 CMD="$CMD --output-dir $OUTPUT_DIR"
 CMD="$CMD --results-dir $RESULTS_DIR"
@@ -103,7 +104,7 @@ echo "Monitor progress:"
 echo "  tail -f $LOG_FILE"
 echo ""
 echo "Check if running:"
-echo "  ps aux | grep cox_feature_engineering"
+echo "  ps aux | grep cox_feature_engineer"
 echo ""
 echo "Stop execution:"
 echo "  kill $PID"

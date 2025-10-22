@@ -7,23 +7,24 @@
 # in the background for TabTransformer model preparation.
 #
 # Usage:
-#   chmod +x run_integrated_dataset.sh
-#   ./run_integrated_dataset.sh
+#   cd src/preprocessing
+#   chmod +x run_integrated_dataset_builder.sh
+#   ./run_integrated_dataset_builder.sh
 #
 # Monitor progress:
 #   tail -f integrated_dataset.log
 #
 # Stop execution:
-#   ps aux | grep integrated_dataset
+#   ps aux | grep integrated_dataset_builder
 #   kill <PID>
 
 echo "🚀 Starting TCGA PANCAN Integrated Dataset Creation..."
 echo "📅 Started at: $(date)"
 
 # Configuration
-DATA_DIR="../data/processed"      # Directory with processed omics data
-OUTPUT_DIR="../data/processed"    # Output directory for integrated datasets
-RESULTS_DIR="../results"          # Results and summary directory
+DATA_DIR="../../data/processed"      # Directory with processed omics data
+OUTPUT_DIR="../../data/processed"    # Output directory for integrated datasets
+RESULTS_DIR="../../results"          # Results and summary directory
 MAX_FEATURES=5000                # Maximum features per omics type
 TRAIN_RATIO=0.7                  # Training set ratio
 VAL_RATIO=0.15                   # Validation set ratio
@@ -32,7 +33,7 @@ RANDOM_SEED=42                   # Random seed for reproducibility
 LOG_FILE="integrated_dataset_$(date +%Y%m%d_%H%M%S).log"
 
 # Build command
-CMD="python 03_integrated_dataset.py"
+CMD="python integrated_dataset_builder.py"
 CMD="$CMD --data-dir $DATA_DIR"
 CMD="$CMD --output-dir $OUTPUT_DIR"
 CMD="$CMD --results-dir $RESULTS_DIR"
@@ -102,7 +103,7 @@ if [ ${#MISSING_FILES[@]} -gt 0 ]; then
     done
     echo ""
     echo "Please run Cox feature engineering first:"
-    echo "    ./run_cox_analysis.sh"
+    echo "    ./run_cox_feature_engineer.sh"
     exit 1
 fi
 
@@ -139,7 +140,7 @@ echo "Monitor progress:"
 echo "  tail -f $LOG_FILE"
 echo ""
 echo "Check if running:"
-echo "  ps aux | grep integrated_dataset"
+echo "  ps aux | grep integrated_dataset_builder"
 echo ""
 echo "Stop execution:"
 echo "  kill $PID"
