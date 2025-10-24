@@ -1,6 +1,6 @@
 # 🧬 Cancer Foundation Model
 
-**설명 가능한 AI 기반 암 예후 예측 시스템**
+**멀티오믹스 기반 암 예후 예측 딥러닝 시스템**
 
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/release/python-380/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-%23EE4C2C.svg?style=flat&logo=PyTorch&logoColor=white)](https://pytorch.org/)
@@ -10,60 +10,79 @@
 
 ## 🎯 프로젝트 개요
 
-Cancer Foundation Model은 멀티오믹스 데이터를 활용하여 암 환자의 생존 예후를 예측하는 딥러닝 시스템입니다.
+Cancer Foundation Model은 멀티오믹스 데이터를 활용하여 암 환자의 3년 생존 예후를 예측하는 **Hybrid FC-NN + TabTransformer** 시스템입니다.
 
 ### 핵심 특징
 
-- **🧬 멀티오믹스 통합**: Expression, CNV, microRNA, RPPA, Mutation 5개 데이터 통합
-- **📊 고차원 메틸레이션**: 396,065개 프로브 데이터 처리 (샤딩 예정)
-- **🧠 설명 가능한 AI**: Cox 회귀계수 기반 특성 가중치 및 Attention 메커니즘
-- **⚡ 높은 성능**: Test AUC **0.8495** (3년 생존 예측)
-- **🔬 TCGA 데이터**: 4,504명 환자의 Pan-Cancer 데이터로 훈련
+- **🧬 멀티오믹스 통합**: 5개 오믹스 (Expression, CNV, microRNA, RPPA, Mutation) + Methylation
+- **🔬 Missing Modality Learning**: Cox 데이터 있음/없음 모두 처리 가능
+- **📊 고차원 데이터 처리**: FC-NN 기반 Dimension Reduction (143K→256, 396K→256)
+- **🧠 Cox 회귀계수 활용**: 도메인 지식을 `[측정값, Cox계수]` 쌍으로 모델에 주입
+- **⚡ 효율적 아키텍처**: 29.58GB 모델, 48GB GPU 메모리로 훈련 가능
+- **📈 TCGA 데이터**: 8,224명 환자의 Pan-Cancer 데이터 활용
 
 ---
 
 ## 🏗️ 시스템 아키텍처
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│  입력: 환자 멀티오믹스 데이터                              │
-├─────────────────────────────────────────────────────────┤
-│  1. 임상 데이터 (나이, 성별, 병기 등)                      │
-│     → 범주형 특성으로 인코딩                               │
-│                                                         │
-│  2. 멀티오믹스 데이터 (5개 오믹스)                        │
-│     → [측정값, Cox계수] 쌍으로 변환                       │
-│     예: [BRCA1_발현량: 5.2, BRCA1_Cox계수: 0.8]          │
-│                                                         │
-│  3. 메틸레이션 데이터 (396K probes)                       │
-│     → 샤딩 후 독립 모델로 처리 (예정)                      │
-├─────────────────────────────────────────────────────────┤
-│  CoxTabTransformer (TabTransformer 기반)                │
-│     • 임상 범주형 특성 임베딩                              │
-│     • 멀티오믹스 [값, Cox계수] 쌍 처리                     │
-│     • Self-Attention 레이어로 특성 관계 학습               │
-│     • 출력: 256-dim representation                      │
-├─────────────────────────────────────────────────────────┤
-│  출력: 3년 생존 예측 (0-1 확률)                           │
-└─────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│  입력: 환자 멀티오믹스 데이터 (8,224명)                         │
+├──────────────────────────────────────────────────────────────┤
+│  1. Clinical Categories (5개)                                 │
+│     → Categorical Embedding                                   │
+│                                                               │
+│  2. Cox Omics (143,040 features) [value, cox] 쌍              │
+│     → FC-NN (2048→512→256)                                    │
+│     → Encoder Dropout (0.3)                                   │
+│     → 256-dim representation                                  │
+│                                                               │
+│  3. Methylation (396,065 CG sites)                            │
+│     → FC-NN (4096→1024→256)                                   │
+│     → Encoder Dropout (0.3)                                   │
+│     → 256-dim representation                                  │
+├──────────────────────────────────────────────────────────────┤
+│  TabTransformer (dim=128, depth=6, heads=8)                  │
+│     • Clinical embedding + Cox 256-dim + Meth 256-dim         │
+│     • Self-Attention layers (dropout=0.1)                     │
+│     • Cross-modal feature learning                            │
+├──────────────────────────────────────────────────────────────┤
+│  출력: 3년 생존 예측 (0=생존, 1=사망)                          │
+└──────────────────────────────────────────────────────────────┘
+```
+
+### Missing Modality Learning
+
+```
+환자 구성:
+├─ Cox 데이터 있음 (4,504명): Clinical + Cox Omics + Methylation
+└─ Cox 데이터 없음 (3,720명): Clinical + [ZERO] + Methylation
+   → Total: 8,224명 환자 모두 활용
 ```
 
 ---
 
 ## 📊 데이터 및 성능
 
-### 훈련 데이터
-- **데이터셋**: TCGA Pan-Cancer
-- **환자 수**: 4,504명
-- **암종**: 27개 타입 (BRCA, LUAD, COAD, OV, KIRC 등)
-- **오믹스 특성**: 71,520개 (5개 오믹스 합산)
-- **메틸레이션**: 396,065 probes (별도 처리)
+### 데이터셋
 
-### 현재 성능
-| 모델 | Test AUC | 환자 수 | 특성 수 | 상태 |
-|------|---------|---------|---------|------|
-| **CoxTabTransformer** | **0.8495** | 4,504 | 71,520 | ✅ 완료 |
-| MethylationTabTransformer | - | 8,224 | 396,065 | 🔄 샤딩 필요 |
+| 구분 | 환자 수 | 특성 수 | 비고 |
+|------|---------|---------|------|
+| **Cox Omics** | 4,504명 | 71,520 features | Expression, CNV, microRNA, RPPA, Mutation |
+| **Methylation** | 8,224명 | 396,065 CG sites | 모든 환자 포함 |
+| **암종** | - | 27개 타입 | BRCA, LUAD, COAD, OV, KIRC 등 |
+
+### 모델 상세
+
+| 항목 | 값 |
+|------|-----|
+| **아키텍처** | Hybrid FC-NN + TabTransformer |
+| **Cox Encoder** | 2,929M params (11.18 GB) |
+| **Meth Encoder** | 4,509M params (17.20 GB) |
+| **TabTransformer** | 212M params (0.81 GB) |
+| **Total** | 7,651M params (29.19 GB) |
+| **GPU 메모리** | 48GB (RTX A6000) |
+| **배치 크기** | 32 |
 
 ---
 
@@ -84,6 +103,7 @@ pip install tab-transformer-pytorch lifelines
 ### 2. 데이터 전처리 (한 번만 실행)
 
 #### Step 1: Cox 회귀분석 실행
+
 ```bash
 cd src/preprocessing
 ./run_cox_feature_engineer.sh
@@ -91,58 +111,39 @@ cd src/preprocessing
 ```
 
 **수행 작업:**
-- TCGA 원본 데이터 로드 (`data/raw/`)
-- **log2 변환 적용** (데이터 정규화):
-  - Expression: `log2(x + 1)`
-  - CNV: `log2(x - min + 1)` (음수 처리 포함)
-  - microRNA: `log2(x + 1)`
-  - RPPA: `log2(x - min + 1)` (음수 처리 포함)
-  - ⚠️ Methylation: 변환 없음 (beta values 0-1)
-  - ⚠️ Mutations: 변환 없음 (impact scores 0-2)
-- 각 암종별로 5개 오믹스 타입에 대해 Cox 비례위험 회귀분석 수행
-- Cox 계수 룩업 테이블 생성 (`cox_coefficients_*.parquet`)
-- 전처리된 오믹스 데이터 저장 (`processed_*_data.parquet`)
+- TCGA 원본 데이터 로드 및 log2 변환
+- 암종별 Cox 비례위험 회귀분석 수행
+- Cox 계수 룩업 테이블 생성
 - 예상 소요 시간: 1-2시간
 
 **주요 출력물:**
 ```
 data/processed/
-├── cox_coefficients_expression.parquet    # Expression Cox 계수
-├── cox_coefficients_cnv.parquet           # CNV Cox 계수
-├── cox_coefficients_microrna.parquet      # microRNA Cox 계수
-├── cox_coefficients_rppa.parquet          # RPPA Cox 계수
-├── cox_coefficients_mutations.parquet     # Mutation Cox 계수
-├── processed_expression_data.parquet      # log2 변환된 Expression
-├── processed_cnv_data.parquet             # log2 변환된 CNV
-├── processed_microrna_data.parquet        # log2 변환된 microRNA
-├── processed_rppa_data.parquet            # log2 변환된 RPPA
-├── processed_mutations_data.parquet       # Mutation impact scores
-├── methylation_data_for_tabtransformer.parquet  # Methylation beta values
-└── processed_clinical_data.parquet        # 임상 데이터
+├── cox_coefficients_*.parquet          # Cox 계수 (암종 × 유전자)
+├── processed_*_data.parquet            # log2 변환된 오믹스 데이터
+└── processed_clinical_data.parquet     # 임상 데이터
 ```
 
 #### Step 2: 통합 데이터셋 생성
+
 ```bash
 ./run_integrated_dataset_builder.sh
 # 백그라운드 실행, 로그 모니터링: tail -f integrated_dataset_*.log
 ```
 
 **수행 작업:**
-- Cox 계수와 오믹스 측정값을 **[측정값, Cox계수] 쌍으로 결합**
-- **중요**: 측정값과 Cox계수를 곱하지 않고 별도 2개 값으로 유지
-- 5개 오믹스 데이터를 하나의 통합 테이블로 병합
-- 통합 데이터셋 저장 (`integrated_table_cox.parquet`)
-- Train/Validation/Test 분할 (70%/15%/15%)
+- Cox 계수와 측정값을 `[측정값, Cox계수]` 쌍으로 결합
+- 통합 데이터셋 생성 (integrated_table_cox.parquet)
+- Methylation 테이블 생성 (methylation_table.parquet)
+- Train/Val/Test 분할 (70%/15%/15%)
 - 예상 소요 시간: 10-30분
 
 **주요 출력물:**
 ```
 data/processed/
-├── integrated_table_cox.parquet    # 🔥 핵심 훈련 파일 (4,504 × 32,762)
-│   # 각 유전자마다 _val과 _cox 2개 컬럼 포함
-│   # 예: Mutations_BRCA1_val, Mutations_BRCA1_cox
-├── train_val_test_splits.json      # 데이터셋 분할 정보
-└── integrated_dataset_summary.json # 통계 요약
+├── integrated_table_cox.parquet    # 4,504 × 143,048 (Cox omics)
+├── methylation_table.parquet       # 8,224 × 396,065 (Methylation)
+└── train_val_test_splits.json      # 데이터셋 분할 정보
 ```
 
 ### 3. 모델 훈련
@@ -150,202 +151,77 @@ data/processed/
 ```bash
 cd ../training
 
-# CoxTabTransformer 훈련
-python train_tabtransformer.py \
-    --model cox \
-    --epochs 50 \
-    --batch_size 32 \
-    --lr 1e-4 \
-    --data_dir ../../data/processed \
-    --results_dir ../../results
+# Hybrid 모델 훈련
+bash run_hybrid_training.sh
 ```
 
-**훈련 옵션:**
-- `--ensemble`: 여러 seed로 앙상블 모델 훈련
-- `--n_seeds 5`: 앙상블 시드 개수
-- `--resume_from`: 체크포인트에서 재개
+**훈련 설정:**
+- Epochs: 100 (early stopping patience=15)
+- Batch size: 32
+- Learning rate: 1e-4 (AdamW, weight_decay=1e-2)
+- Optimizer scheduler: ReduceLROnPlateau (patience=5)
+- Loss: BCEWithLogitsLoss
 
 ---
 
-## 💡 신규 환자 데이터 예측
+## 💡 모델 사용 (추론)
 
-### 단일 모델 예측 (Single Seed)
+### 신규 환자 데이터 예측
 
 ```python
-from src.models.cox_tabtransformer import CoxTabTransformer
-from src.utils.tabtransformer_utils import prepare_cox_data, prepare_clinical_data
+import torch
 import pandas as pd
 import numpy as np
-import torch
+from src.models.hybrid_fc_tabtransformer import HybridMultiModalModel
 
-# ========================================
-# Step 1: 훈련된 모델 로드 (특정 seed)
-# ========================================
-model = CoxTabTransformer(
-    clinical_categories=(10, 3, 8, 4, 5),  # 훈련 시 사용한 vocab sizes
-    num_omics_features=71520,
-    dim=64, depth=4, heads=8
+# 1. 훈련된 모델 로드
+model = HybridMultiModalModel(
+    clinical_categories=(10, 3, 8, 4, 5),
+    cox_input_dim=143040,    # 71,520 * 2 ([val, cox] 쌍)
+    cox_hidden_dims=(2048, 512, 256),
+    meth_input_dim=396065,
+    meth_hidden_dims=(4096, 1024, 256),
+    dim=128, depth=6, heads=8
 )
-# 특정 시드 모델 로드 (예: seed_42)
-checkpoint = torch.load('src/training/checkpoints/seed_42/best_cox_tabtransformer.pth')
+
+checkpoint = torch.load('results/hybrid_training_YYYYMMDD_HHMMSS/best_model.pth')
 model.load_state_dict(checkpoint['model_state_dict'])
 model.eval()
 
-# ========================================
-# Step 2: 신규 환자 원본 데이터 로드
-# ========================================
-# ⚠️ 중요: 원본 데이터 (log2 변환 전)를 로드해야 합니다!
-new_patient_expression = pd.read_csv('new_patient_expression.csv', index_col=0)
-new_patient_cnv = pd.read_csv('new_patient_cnv.csv', index_col=0)
-new_patient_mirna = pd.read_csv('new_patient_mirna.csv', index_col=0)
-new_patient_rppa = pd.read_csv('new_patient_rppa.csv', index_col=0)
-new_patient_mutations = pd.read_csv('new_patient_mutations.csv', index_col=0)
-new_patient_clinical = pd.read_csv('new_patient_clinical.csv', index_col=0)
+# 2. 신규 환자 데이터 준비
+# - Clinical: [age_group, sex, race, stage, grade] (categorical)
+# - Cox Omics: [val, cox] 쌍 형식 (143,040 features)
+# - Methylation: beta values (396,065 CG sites)
 
-# ========================================
-# Step 3: log2 변환 적용 (훈련 시와 동일한 방법)
-# ========================================
-# Expression: log2(x + 1)
-expression_log2 = np.log2(new_patient_expression + 1)
+clinical_cat = torch.tensor([[5, 1, 2, 3, 2]], dtype=torch.long)  # (1, 5)
+cox_omics = torch.randn(1, 143040)  # (1, 143040)
+methylation = torch.randn(1, 396065)  # (1, 396065)
+cox_mask = torch.tensor([[True]], dtype=torch.bool)  # Cox 데이터 있음
 
-# CNV: log2(x - min + 1) for negative handling
-cnv_min = new_patient_cnv.min().min()
-cnv_log2 = np.log2(new_patient_cnv - cnv_min + 1) if cnv_min < 0 else np.log2(new_patient_cnv + 1)
-
-# microRNA: log2(x + 1)
-mirna_log2 = np.log2(new_patient_mirna + 1)
-
-# RPPA: log2(x - min + 1) for negative handling
-rppa_min = new_patient_rppa.min().min()
-rppa_log2 = np.log2(new_patient_rppa - rppa_min + 1) if rppa_min < 0 else np.log2(new_patient_rppa + 1)
-
-# Mutations: NO transformation (already impact scores 0-2)
-mutations_scores = new_patient_mutations
-
-# ========================================
-# Step 4: Cox 계수 로드 (환자의 암종에 맞춰)
-# ========================================
-patient_id = 'TCGA-XX-XXXX'
-patient_cancer_type = new_patient_clinical.loc[patient_id, 'acronym']  # 예: 'BRCA'
-
-# 통합 테이블의 특성 순서 로드 (훈련 시와 동일한 순서 필수!)
-integrated_data = pd.read_parquet('data/processed/integrated_table_cox.parquet')
-feature_columns = [col for col in integrated_data.columns if col.endswith('_val')]
-
-# ========================================
-# Step 5: [측정값, Cox계수] 쌍 생성 (특성 순서 동일하게!)
-# ========================================
-omics_values = []
-for feat_col in feature_columns:
-    # feat_col 예: 'Expression_BRCA1_val'
-    cox_col = feat_col.replace('_val', '_cox')
-
-    # 훈련된 데이터에서 이 특성의 Cox 계수 가져오기
-    cox_value = integrated_data[cox_col].iloc[0]  # 모든 환자가 동일한 Cox 계수 사용
-
-    # 환자의 측정값 가져오기 (로그 변환된 값)
-    omics_type, feature_name = feat_col.split('_', 1)[0], '_'.join(feat_col.split('_')[1:-1])
-
-    if omics_type == 'Expression':
-        measured_value = expression_log2.loc[feature_name, patient_id]
-    elif omics_type == 'CNV':
-        measured_value = cnv_log2.loc[feature_name, patient_id]
-    elif omics_type == 'microRNA':
-        measured_value = mirna_log2.loc[feature_name, patient_id]
-    elif omics_type == 'RPPA':
-        measured_value = rppa_log2.loc[feature_name, patient_id]
-    elif omics_type == 'Mutations':
-        measured_value = mutations_scores.loc[feature_name, patient_id]
-
-    omics_values.extend([measured_value, cox_value])  # [val, cox] 쌍
-
-omics_tensor = torch.tensor(omics_values, dtype=torch.float32).unsqueeze(0)
-
-# ========================================
-# Step 6: 임상 데이터 인코딩
-# ========================================
-clinical_encoded, _, _, _ = prepare_clinical_data(new_patient_clinical)
-
-# ========================================
-# Step 7: 예측 수행
-# ========================================
+# 3. 예측 수행
 with torch.no_grad():
-    survival_logit, representation = model(clinical_encoded.long(), omics_tensor)
-    survival_prob = torch.sigmoid(survival_logit)
+    logit, representation = model(clinical_cat, cox_omics, methylation, cox_mask)
+    survival_prob = torch.sigmoid(logit)
 
-print(f"환자 ID: {patient_id}")
-print(f"암종: {patient_cancer_type}")
 print(f"3년 생존 확률: {survival_prob.item():.2%}")
 print(f"예측 결과: {'생존 가능성 높음' if survival_prob > 0.5 else '생존 가능성 낮음'}")
 ```
 
-### 앙상블 예측 (Multiple Seeds)
-
-더 안정적인 예측을 위해 여러 시드 모델의 평균을 사용할 수 있습니다.
+### Cox 데이터가 없는 환자
 
 ```python
-import glob
+# Cox 데이터가 없는 경우
+clinical_cat = torch.tensor([[5, 1, 2, 3, 2]], dtype=torch.long)
+cox_omics = torch.zeros(1, 143040)  # Cox 데이터 없음 → ZERO
+methylation = torch.randn(1, 396065)
+cox_mask = torch.tensor([[False]], dtype=torch.bool)  # Cox 데이터 없음
 
-# 모든 시드 모델 로드
-seed_dirs = glob.glob('src/training/checkpoints/seed_*')
-ensemble_predictions = []
+with torch.no_grad():
+    logit, representation = model(clinical_cat, cox_omics, methylation, cox_mask)
+    survival_prob = torch.sigmoid(logit)
 
-for seed_dir in seed_dirs:
-    model = CoxTabTransformer(
-        clinical_categories=(10, 3, 8, 4, 5),
-        num_omics_features=71520,
-        dim=64, depth=4, heads=8
-    )
-    checkpoint = torch.load(f'{seed_dir}/best_cox_tabtransformer.pth')
-    model.load_state_dict(checkpoint['model_state_dict'])
-    model.eval()
-
-    with torch.no_grad():
-        survival_logit, _ = model(clinical_encoded.long(), omics_tensor)
-        survival_prob = torch.sigmoid(survival_logit)
-        ensemble_predictions.append(survival_prob.item())
-
-# 앙상블 평균
-mean_prob = np.mean(ensemble_predictions)
-std_prob = np.std(ensemble_predictions)
-
-print(f"앙상블 예측 (평균): {mean_prob:.2%} ± {std_prob:.2%}")
-print(f"개별 모델 예측: {[f'{p:.2%}' for p in ensemble_predictions]}")
+print(f"3년 생존 확률: {survival_prob.item():.2%}")
 ```
-
-### 입력 데이터 형식
-
-#### 멀티오믹스 데이터 (`new_patient_omics.csv`)
-```csv
-gene_id,patient_1,patient_2
-BRCA1|672,5.234,4.567
-TP53|7157,6.789,5.432
-MYC|4609,7.123,6.890
-...
-```
-
-#### 임상 데이터 (`new_patient_clinical.csv`)
-```csv
-patient_id,age_at_initial_pathologic_diagnosis,gender,acronym,pathologic_stage
-patient_1,55,FEMALE,BRCA,Stage II
-patient_2,62,MALE,LUAD,Stage III
-```
-
-### 중요 사항
-
-1. **log2 변환 필수**: 원본 데이터에 반드시 동일한 log2 변환 적용
-   - Expression, CNV, microRNA, RPPA: `log2(x + 1)` (음수는 `log2(x - min + 1)`)
-   - Methylation, Mutations: 변환 없음
-
-2. **[측정값, Cox계수] 쌍 형식**:
-   - ❌ 곱셈 아님: `value * cox_coefficient`
-   - ✅ 2개 값 쌍: `[value, cox_coefficient]`
-
-3. **특성 순서 일치**: `integrated_table_cox.parquet`의 컬럼 순서와 동일하게 정렬
-
-4. **Cox 계수 매칭**: 환자의 암종(cancer_type)에 해당하는 Cox 계수만 사용
-
-5. **모델 체크포인트**: `src/training/checkpoints/seed_XX/best_cox_tabtransformer.pth` 형식
 
 ---
 
@@ -355,264 +231,236 @@ patient_2,62,MALE,LUAD,Stage III
 CANCER_FOUNDATION_MODEL/
 ├── data/
 │   ├── raw/                           # TCGA 원본 데이터
-│   │   ├── *_expression_whitelisted.tsv
-│   │   ├── CNV.*_whitelisted.tsv
-│   │   ├── *_miRNASeq_whitelisted.tsv
-│   │   ├── *_RPPA_whitelisted.tsv
-│   │   ├── *_whitelisted.maf.gz
-│   │   ├── *_Methylation450_whitelisted.tsv
-│   │   └── clinical_*_with_followup.tsv
 │   └── processed/                     # 전처리된 데이터
-│       ├── cox_coefficients_*.parquet           # Cox 회귀계수 룩업 테이블
-│       ├── processed_*_data.parquet             # log2 변환된 오믹스 데이터
-│       ├── integrated_table_cox.parquet         # 🔥 핵심 훈련 파일
-│       ├── train_val_test_splits.json           # 데이터셋 분할 정보
-│       └── processed_clinical_data.parquet      # 임상 데이터
+│       ├── integrated_table_cox.parquet         # Cox 통합 테이블
+│       ├── methylation_table.parquet            # Methylation 테이블
+│       └── train_val_test_splits.json           # 데이터셋 분할
 │
 ├── src/
-│   ├── preprocessing/                 # 데이터 전처리 스크립트
-│   │   ├── cancer_multiomics_dataset.py      # PyTorch Dataset 클래스
-│   │   ├── cox_feature_engineer.py           # Cox 회귀분석 실행
-│   │   ├── integrated_dataset_builder.py     # 데이터셋 통합
-│   │   ├── run_cox_feature_engineer.sh       # Cox 분석 래퍼
-│   │   └── run_integrated_dataset_builder.sh # 빌더 래퍼
+│   ├── preprocessing/                 # 데이터 전처리
+│   │   ├── cox_feature_engineer.py
+│   │   ├── integrated_dataset_builder.py
+│   │   ├── run_cox_feature_engineer.sh
+│   │   └── run_integrated_dataset_builder.sh
 │   ├── models/
-│   │   ├── cox_tabtransformer.py             # 멀티오믹스 모델
-│   │   └── methylation_tabtransformer.py     # 메틸레이션 모델
-│   ├── training/
-│   │   └── train_tabtransformer.py           # 훈련 스크립트
-│   └── utils/
-│       ├── tabtransformer_utils.py           # 전처리 유틸리티
-│       ├── feature_converter.py              # 추론용 변환
-│       └── user_data_pipeline.py             # 추론용 파이프라인
+│   │   ├── hybrid_fc_tabtransformer.py         # Hybrid 모델
+│   │   └── [obsolete files in obsolete/]
+│   ├── data/
+│   │   └── hybrid_dataset.py                   # PyTorch Dataset
+│   └── training/
+│       ├── train_hybrid.py                     # 훈련 스크립트
+│       └── run_hybrid_training.sh              # 훈련 래퍼
 │
-├── notebooks/                         # 분석 노트북
-├── results/                           # 훈련 결과
-├── doc/
-│   └── CFM.vibe_coding_guide.md       # 개발자 가이드
-└── README.md                          # 사용자 가이드 (이 파일)
+├── results/                           # 훈련 결과 (timestamped)
+├── obsolete/                          # 구버전 코드/모델
+└── doc/
+    └── CFM.vibe_coding_guide.md       # 개발자 가이드
 ```
 
 ---
 
 ## 🔬 기술 세부사항
 
-### Cox 기반 멀티오믹스 파이프라인 전체 흐름
+### Cox 기반 멀티오믹스 파이프라인
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│ Step 1: 원본 TCGA 데이터 (data/raw/)                              │
-├─────────────────────────────────────────────────────────────────┤
-│ Expression, CNV, microRNA, RPPA, Mutations 데이터 로드            │
-│ - 환자 x 유전자 형태의 매트릭스                                    │
-└─────────────────────────────────────────────────────────────────┘
-                            ↓
-┌─────────────────────────────────────────────────────────────────┐
-│ Step 2: log2 변환 (cox_feature_engineer.py)                     │
-├─────────────────────────────────────────────────────────────────┤
-│ Expression:  log2(x + 1)                                        │
-│ CNV:         log2(x - min + 1)  [음수 처리]                      │
-│ microRNA:    log2(x + 1)                                        │
-│ RPPA:        log2(x - min + 1)  [음수 처리]                      │
-│ Mutations:   변환 없음 (impact scores 0-2)                       │
-└─────────────────────────────────────────────────────────────────┘
-                            ↓
-┌─────────────────────────────────────────────────────────────────┐
-│ Step 3: Cox 회귀분석 (cox_feature_engineer.py)                  │
-├─────────────────────────────────────────────────────────────────┤
-│ 암종별로 Cox 비례위험 회귀분석 수행                                │
-│ - 엔드포인트: 3년 생존 여부 (OS_3yr)                              │
-│ - 출력: cox_coefficients_*.parquet                              │
-│         (유전자 × 암종별 Cox 계수)                                │
-└─────────────────────────────────────────────────────────────────┘
-                            ↓
-┌─────────────────────────────────────────────────────────────────┐
-│ Step 4: [측정값, Cox계수] 쌍 생성 (integrated_dataset_builder.py)│
-├─────────────────────────────────────────────────────────────────┤
-│ for gene in genes:                                              │
-│     enhanced_features[f"{gene}_val"] = log2_transformed_value   │
-│     enhanced_features[f"{gene}_cox"] = cox_coefficient          │
-│                                                                 │
-│ ⚠️ 중요: 곱셈 아님! 별도 2개 컬럼으로 유지                         │
-│ 출력: integrated_table_cox.parquet (4,504 × 32,762)             │
-└─────────────────────────────────────────────────────────────────┘
-                            ↓
-┌─────────────────────────────────────────────────────────────────┐
-│ Step 5: Tensor 변환 (tabtransformer_utils.py:41-42)            │
-├─────────────────────────────────────────────────────────────────┤
-│ paired_data = torch.stack([values, cox], dim=2)                 │
-│ # Shape: (batch, 71520, 2)                                      │
-│                                                                 │
-│ flattened = paired_data.view(batch, -1)                         │
-│ # Shape: (batch, 143040) = 71520 * 2                            │
-│                                                                 │
-│ 최종 입력: [gene1_val, gene1_cox, gene2_val, gene2_cox, ...]   │
-└─────────────────────────────────────────────────────────────────┘
-                            ↓
-┌─────────────────────────────────────────────────────────────────┐
-│ Step 6: CoxTabTransformer 모델 (cox_tabtransformer.py)         │
-├─────────────────────────────────────────────────────────────────┤
-│ TabTransformer(                                                 │
-│     num_continuous = 71520 * 2,  # [val, cox] 쌍이므로 *2       │
-│     ...                                                         │
-│ )                                                               │
-│ → Transformer layers → 3년 생존 예측                             │
-└─────────────────────────────────────────────────────────────────┘
+Step 1: 원본 데이터 → log2 변환
+  - Expression: log2(x + 1)
+  - CNV: log2(x - min + 1)  [음수 처리]
+  - microRNA: log2(x + 1)
+  - RPPA: log2(x - min + 1)
+  - Mutations: 변환 없음 (impact scores 0-2)
+  - Methylation: 변환 없음 (beta values 0-1)
+
+Step 2: Cox 회귀분석
+  - 암종별로 각 유전자에 대해 Cox 비례위험 회귀분석 수행
+  - Cox 계수 룩업 테이블 생성
+
+Step 3: [측정값, Cox계수] 쌍 생성
+  - 각 유전자마다 2개 값으로 저장:
+    - gene_val: log2 변환된 측정값
+    - gene_cox: Cox 회귀계수
+  - ⚠️ 중요: 곱셈 아님! 별도 2개 값으로 유지
+
+Step 4: Hybrid FC-NN + TabTransformer
+  - FC-NN으로 Dimension Reduction
+  - TabTransformer로 Cross-modal Learning
+  - 3년 생존 예측
 ```
 
-### 입력 데이터 형식 ([측정값, Cox계수] 쌍)
+### 입력 데이터 형식
 
-**⚠️ 매우 중요**: 모델은 측정값과 Cox계수를 **곱하지 않고** 별도의 2개 값으로 입력받습니다.
+**⚠️ 매우 중요**: 모델은 측정값과 Cox계수를 **곱하지 않고** 별도 2개 값으로 입력받습니다.
 
 ```python
-# 잘못된 방법 ❌
-input = [gene1_value * gene1_cox, gene2_value * gene2_cox, ...]  # 곱한 값 X
+# ❌ 잘못된 방법
+input = [gene1_value * gene1_cox, gene2_value * gene2_cox, ...]
 
-# 올바른 방법 ✅
+# ✅ 올바른 방법
 input = [
     gene1_value, gene1_cox,  # 2개 값 쌍
-    gene2_value, gene2_cox,  # 2개 값 쌍
-    gene3_value, gene3_cox,  # 2개 값 쌍
+    gene2_value, gene2_cox,
+    gene3_value, gene3_cox,
     ...
 ]
 ```
 
-**구현 세부사항:**
-```python
-# src/utils/tabtransformer_utils.py:41-42
-paired_data = torch.stack([omics_tensor, cox_expanded], dim=2)  # (batch, features, 2)
-flattened = paired_data.view(batch_size, -1)  # (batch, features*2)
-
-# src/models/cox_tabtransformer.py:31
-self.base_transformer = TabTransformer(
-    num_continuous=num_omics_features * 2,  # [측정값, Cox계수] 쌍이므로 *2
-    ...
-)
-```
-
-**데이터 흐름 예시:**
-```python
-# 입력 예시 (BRCA1 유전자)
-raw_value = 1234.5           # 원본 Expression 값
-log2_value = log2(1234.5 + 1) = 10.27  # log2 변환
-cox_coef = 0.345             # BRCA 암종의 BRCA1 Cox 계수
-
-# integrated_table_cox.parquet에 저장:
-# Expression_BRCA1_val: 10.27
-# Expression_BRCA1_cox: 0.345
-
-# 모델 입력 텐서:
-# [..., 10.27, 0.345, ...] ← 2개 값이 연속으로 배치
-```
-
-### 모델 아키텍처
+### 모델 아키텍처 상세
 
 ```python
-CoxTabTransformer(
-    clinical_categories=(10, 3, 8, 4, 5),     # 범주형 임상 특성
-    num_omics_features=71520,                 # 5개 오믹스 특성 합계
-    dim=64,                                   # 임베딩 차원
-    depth=4,                                  # Transformer 레이어 수
-    heads=8,                                  # Attention 헤드 수
-    attn_dropout=0.3,                         # Attention dropout
-    ff_dropout=0.3                            # Feedforward dropout
+HybridMultiModalModel(
+    clinical_categories=(10, 3, 8, 4, 5),     # Clinical categorical features
+    cox_input_dim=143040,                      # 71,520 * 2 ([val, cox] 쌍)
+    cox_hidden_dims=(2048, 512, 256),         # Cox FC-NN layers
+    meth_input_dim=396065,                     # Methylation CG sites
+    meth_hidden_dims=(4096, 1024, 256),       # Meth FC-NN layers
+    dim=128,                                   # TabTransformer embedding dim
+    depth=6,                                   # Transformer layers
+    heads=8,                                   # Attention heads
+    attn_dropout=0.1,
+    ff_dropout=0.1,
+    encoder_dropout=0.3,
+    dim_out=1                                  # Binary classification
 )
 ```
 
 **입력:**
-- `clinical_categorical`: (batch_size, num_clinical_features)
-- `omics_continuous`: (batch_size, num_omics_features * 2)
+- `clinical_cat`: (batch, 5) - Categorical features
+- `cox_omics`: (batch, 143040) - Cox [val, cox] 쌍
+- `methylation`: (batch, 396065) - Beta values
+- `cox_mask`: (batch,) - Cox 데이터 유무 (True/False)
 
 **출력:**
-- `survival_logit`: (batch_size, 1) - 3년 생존 예측 로짓
-- `representation`: (batch_size, 256) - 중간 임베딩 (해석용)
+- `logit`: (batch, 1) - 3년 생존 예측 로짓
+- `representation`: (batch, dim) - 중간 임베딩
 
 ---
 
 ## 📈 성능 및 검증
 
 ### 훈련 환경
+
 - **GPU**: NVIDIA RTX A6000 (48GB)
-- **훈련 시간**: ~2시간 (50 epochs)
-- **메모리 사용량**: ~4GB
+- **모델 크기**: 29.19 GB
+- **훈련 시간**: ~6-8시간 (100 epochs)
+- **배치 크기**: 32
 
 ### 훈련 설정
-- **Optimizer**: AdamW (weight_decay=1e-2)
-- **Learning Rate**: 1e-4 (초기값), ReduceLROnPlateau 스케줄러
-- **Batch Size**: 32
-- **Loss**: BCEWithLogitsLoss (pos_weight=1.2)
-- **Early Stopping**: 10 epochs patience
 
-### 검증 결과
-- **Best Validation AUC**: 0.85+
-- **Test AUC**: 0.8495
-- **Test Accuracy**: 0.77+
+- **Optimizer**: AdamW (weight_decay=1e-2)
+- **Learning Rate**: 1e-4 (ReduceLROnPlateau)
+- **Loss**: BCEWithLogitsLoss
+- **Early Stopping**: 15 epochs patience
 
 ---
 
-## 🛣️ 로드맵
+## ⚠️ 주의사항
 
-### ✅ Phase 1: 데이터 준비 (완료)
-- [x] TCGA 데이터 다운로드 및 정제
-- [x] Cox 회귀분석 (5개 오믹스)
-- [x] 특성 공학 및 데이터 통합
+### 1. [측정값, Cox계수] 쌍 형식 (매우 중요!)
 
-### ✅ Phase 2: 멀티오믹스 모델 (완료)
-- [x] CoxTabTransformer 구현
-- [x] 훈련 파이프라인 구축
-- [x] 성능 검증 (Test AUC 0.8495)
+- ❌ **잘못된 방법**: `value * cox_coefficient` (곱셈)
+- ✅ **올바른 방법**: `[value, cox_coefficient]` (2개 값 스택)
 
-### 🔄 Phase 2: 메틸레이션 모델 (진행 중)
-- [ ] 샤딩 전략 구현 (396K probes)
-- [ ] 샤드별 모델 훈련
-- [ ] Fusion layer 구현
+### 2. log2 변환 일관성
 
-### ⏳ Phase 3: 병리영상 모델 (대기)
-- [ ] WSI 전처리
-- [ ] Swin Transformer 구현
-- [ ] MIL(Multiple Instance Learning) 적용
+- Expression, CNV, microRNA, RPPA: `log2(x + 1)` 필수
+- CNV, RPPA 음수 처리: `log2(x - min + 1)`
+- Methylation, Mutations: 변환 없음
+- **추론 시 동일한 변환 적용 필수**
 
-### ⏳ Phase 4: 멀티모달 융합 (대기)
-- [ ] Cross-modal Attention
-- [ ] LLM 파인튜닝
-- [ ] 설명 가능성 시각화
+### 3. Missing Modality 처리
+
+- Cox 데이터 없는 환자: `cox_omics`를 ZERO로, `cox_mask`를 False로 설정
+- 모델은 자동으로 Methylation만 사용하여 예측
+
+### 4. GPU 메모리
+
+- 48GB GPU 필요 (RTX A6000)
+- 배치 크기 32 권장
+- 메모리 부족 시 배치 크기 줄이기
+
+### 5. 데이터 정렬
+
+- 모든 데이터셋의 환자 ID 정렬 확인
+- 특성 순서 일치 필수
+
+---
+
+## 🔧 Troubleshooting
+
+### 데이터 전처리 버그 (2025-10-24 수정 완료)
+
+#### 문제: 37,446개 중복 컬럼명
+
+초기 구현에서 `integrated_dataset_builder.py`의 feature naming에 버그가 있었습니다:
+
+```python
+# ❌ 버그 있는 코드 (수정 전)
+enhanced_features[f"{feature}_value"] = measured_values[feature]
+enhanced_features[f"{feature}_cox"] = cox_coef_mean[feature]
+# 문제: omics_type 접두사 없음 → 같은 유전자가 여러 omics에 있으면 중복!
+```
+
+**근본 원인**: 동일한 유전자(예: BRCA1, TP53)가 여러 omics 타입(Expression, CNV, Mutations 등)에 존재할 때, omics 타입 구분 없이 feature명을 생성하여 37,446개 중복 컬럼 발생.
+
+#### 해결 방법
+
+```python
+# ✅ 수정된 코드 (2025-10-24)
+enhanced_features[f"{omics_type}_{feature}_val"] = measured_values[feature]
+enhanced_features[f"{omics_type}_{feature}_cox"] = cox_coef_mean[feature]
+```
+
+**수정 내용:**
+1. `omics_type` 접두사 추가: `Expression_`, `CNV_`, `Mutations_` 등
+2. `_value` → `_val`로 변경 (일관성)
+3. 올바른 형식: `Expression_BRCA1|672_val`, `Expression_BRCA1|672_cox`
+
+**영향받는 파일:**
+- `src/preprocessing/integrated_dataset_builder.py:180-183`
+- `data/processed/integrated_table_cox.parquet` (재생성 필요)
+- `data/processed/cox_feature_info.json` (자동 수정됨)
+
+### Feature Naming Convention
+
+**올바른 feature 명명 규칙:**
+
+```
+{OmicsType}_{GeneSymbol}|{EntrezID}_{val|cox}
+
+예시:
+- Expression_TP53|7157_val
+- Expression_TP53|7157_cox
+- CNV_BRCA1|672_val
+- CNV_BRCA1|672_cox
+- Mutations_EGFR|1956_val
+- Mutations_EGFR|1956_cox
+```
+
+**주의사항:**
+- Expression omics는 `GeneSymbol|EntrezID` 형식 사용
+- CNV, Mutations는 `GeneSymbol`만 사용 (Entrez ID 없음)
+- microRNA는 miRNA 이름 사용 (예: `microRNA_hsa-mir-21_val`)
+- RPPA는 protein 이름 사용 (예: `RPPA_p53_val`)
 
 ---
 
 ## 📚 참고 문헌
 
 ### 데이터
+
 - **TCGA Research Network** - The Cancer Genome Atlas Pan-Cancer Analysis Project
 - [TCGA Data Portal](https://portal.gdc.cancer.gov/)
 
 ### 방법론
+
 - **TabTransformer** - Huang et al., "TabTransformer: Tabular Data Modeling Using Contextual Embeddings"
 - **Cox Regression** - Cox, D. R. (1972). "Regression models and life-tables"
 
 ### 구현
+
 - **tab-transformer-pytorch** - [lucidrains/tab-transformer-pytorch](https://github.com/lucidrains/tab-transformer-pytorch)
 - **lifelines** - Cox regression library for Python
-
----
-
-## 🤝 기여 및 문의
-
-### 기여 방법
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
-
-### 문의
-- **이슈 등록**: GitHub Issues
-- **이메일**: your-email@example.com
-
----
-
-## 📄 라이선스
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ---
 

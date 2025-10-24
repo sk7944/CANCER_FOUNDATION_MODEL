@@ -71,7 +71,7 @@ train_cox_model() {
             --lr 2e-5 \
             --data_dir "../../data/processed" \
             --results_dir "../../results" \
-            --checkpoint_dir "./checkpoints" \
+            --checkpoint_dir "./checkpoints/cox" \
             --target_auc 0.85 \
             > "$log_file" 2>&1 &
     else
@@ -82,7 +82,7 @@ train_cox_model() {
             --lr 2e-5 \
             --data_dir "../../data/processed" \
             --results_dir "../../results" \
-            --checkpoint_dir "./checkpoints" \
+            --checkpoint_dir "./checkpoints/cox" \
             > "$log_file" 2>&1 &
     fi
     

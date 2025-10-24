@@ -164,13 +164,8 @@ def create_cox_enhanced_features(
         logger.warning(f"⚠️  No common features between {omics_type} data and Cox coefficients")
         return pd.DataFrame()
     
-    # Sample features if too many
-    if len(common_features) > max_features:
-        np.random.seed(42)
-        common_features = np.random.choice(common_features, max_features, replace=False).tolist()
-        logger.info(f"🎯 Sampled {max_features} features from {len(common_features)} available for {omics_type}")
-    
-    logger.info(f"🔬 Creating Cox-enhanced features for {omics_type}: {len(common_features):,} features")
+    # FC-NN 사용: 모든 features 사용 (제한 없음)
+    logger.info(f"🔬 Creating Cox-enhanced features for {omics_type}: {len(common_features):,} features (ALL features)")
     
     # Get data for common features
     measured_values = omics_data[common_features].copy()
@@ -181,10 +176,11 @@ def create_cox_enhanced_features(
     # Create enhanced feature matrix
     enhanced_features = pd.DataFrame(index=measured_values.index)
     
-    # Add measured values
+    # Add measured values with omics_type prefix to prevent duplicates
+    # Format: {omics_type}_{gene_symbol|entrez_id}_val and _cox
     for feature in common_features:
-        enhanced_features[f"{feature}_value"] = measured_values[feature]
-        enhanced_features[f"{feature}_cox"] = cox_coef_mean[feature]
+        enhanced_features[f"{omics_type}_{feature}_val"] = measured_values[feature]
+        enhanced_features[f"{omics_type}_{feature}_cox"] = cox_coef_mean[feature]
     
     logger.info(f"✅ Enhanced features created: {enhanced_features.shape[0]} patients × {enhanced_features.shape[1]} features")
     
@@ -265,14 +261,23 @@ def create_integrated_cox_table(
             logger.warning(f"⚠️  No enhanced features created for {omics_type}")
     
     logger.info(f"🎯 Final integrated Cox table: {integrated_table.shape[0]} patients × {integrated_table.shape[1]} features")
-    
+
+    # Check for duplicate columns
+    if integrated_table.columns.duplicated().any():
+        logger.warning(f"⚠️  Found {integrated_table.columns.duplicated().sum()} duplicate column names")
+        logger.warning(f"   Removing duplicates...")
+        integrated_table = integrated_table.loc[:, ~integrated_table.columns.duplicated()]
+        logger.info(f"✅ After removing duplicates: {integrated_table.shape[0]} patients × {integrated_table.shape[1]} features")
+
     # Convert data types for memory efficiency
     for col in integrated_table.columns:
-        if integrated_table[col].dtype == 'float64':
-            integrated_table[col] = integrated_table[col].astype('float32')
-        elif integrated_table[col].dtype == 'int64':
-            integrated_table[col] = integrated_table[col].astype('int32')
-    
+        col_data = integrated_table[col]
+        if isinstance(col_data, pd.Series):  # Ensure it's a Series
+            if col_data.dtype == 'float64':
+                integrated_table[col] = col_data.astype('float32')
+            elif col_data.dtype == 'int64':
+                integrated_table[col] = col_data.astype('int32')
+
     logger.info("✅ Data types optimized for memory efficiency")
     
     return integrated_table
@@ -316,28 +321,32 @@ def create_methylation_table(
     available_features = [f for f in methylation_clinical_features if f in clinical_data.columns]
     methylation_clinical = clinical_data.loc[common_patients, available_features].copy()
     
-    # Sample methylation features to manage size (keep top variance features)
+    # FC-NN 사용: 모든 CG 사이트 사용 (제한 없음)
     methylation_subset = methylation_data.loc[common_patients]
-    
-    # Calculate variance and select top features
-    feature_variances = methylation_subset.var()
-    top_features = feature_variances.nlargest(50000).index  # Keep top 50k features
-    methylation_subset = methylation_subset[top_features]
-    
-    logger.info(f"🧬 Selected top {len(top_features):,} methylation features by variance")
+
+    logger.info(f"🧬 Using ALL {methylation_subset.shape[1]:,} methylation CG sites (no sampling)")
     
     # Combine clinical and methylation data
     methylation_table = pd.concat([methylation_clinical, methylation_subset], axis=1)
     
     logger.info(f"🎯 Final methylation table: {methylation_table.shape[0]} patients × {methylation_table.shape[1]} features")
-    
+
+    # Check for duplicate columns
+    if methylation_table.columns.duplicated().any():
+        logger.warning(f"⚠️  Found {methylation_table.columns.duplicated().sum()} duplicate column names")
+        logger.warning(f"   Removing duplicates...")
+        methylation_table = methylation_table.loc[:, ~methylation_table.columns.duplicated()]
+        logger.info(f"✅ After removing duplicates: {methylation_table.shape[0]} patients × {methylation_table.shape[1]} features")
+
     # Convert data types for memory efficiency
     for col in methylation_table.columns:
-        if methylation_table[col].dtype == 'float64':
-            methylation_table[col] = methylation_table[col].astype('float32')
-        elif methylation_table[col].dtype == 'int64':
-            methylation_table[col] = methylation_table[col].astype('int32')
-    
+        col_data = methylation_table[col]
+        if isinstance(col_data, pd.Series):  # Ensure it's a Series
+            if col_data.dtype == 'float64':
+                methylation_table[col] = col_data.astype('float32')
+            elif col_data.dtype == 'int64':
+                methylation_table[col] = col_data.astype('int32')
+
     logger.info("✅ Data types optimized for memory efficiency")
     
     return methylation_table

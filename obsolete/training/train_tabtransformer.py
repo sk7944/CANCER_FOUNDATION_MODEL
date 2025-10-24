@@ -20,7 +20,8 @@ while project_root.name != 'CANCER_FOUNDATION_MODEL' and project_root.parent != 
 if project_root.name == 'CANCER_FOUNDATION_MODEL':
     sys.path.insert(0, str(project_root))
 from src.models.cox_tabtransformer import CoxTabTransformer
-from src.models.methylation_tabtransformer import MethylationTabTransformer
+# Note: MethylationTabTransformer는 이제 Sharded 버전으로 대체됨
+# 사용: src/training/train_sharded_methylation.py 및 src/models/sharded_methylation_tabtransformer.py
 from src.utils.tabtransformer_utils import *
 
 warnings.filterwarnings('ignore')

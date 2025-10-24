@@ -25,7 +25,7 @@ echo "📅 Started at: $(date)"
 DATA_DIR="../../data/processed"      # Directory with processed omics data
 OUTPUT_DIR="../../data/processed"    # Output directory for integrated datasets
 RESULTS_DIR="../../results"          # Results and summary directory
-MAX_FEATURES=5000                # Maximum features per omics type
+MAX_FEATURES=999999              # FC-NN: 모든 features 사용 (실질적 제한 없음)
 TRAIN_RATIO=0.7                  # Training set ratio
 VAL_RATIO=0.15                   # Validation set ratio
 TEST_RATIO=0.15                  # Test set ratio
