@@ -404,6 +404,113 @@ nvidia-smi -l 1
 
 ---
 
+## 프로젝트 난이도 및 교훈 (Lessons Learned)
+
+### 왜 이렇게 어려웠나?
+
+멀티오믹스 + Cox 회귀 + TabTransformer 파이프라인 구축은 예상보다 훨씬 복잡했습니다.
+
+#### 1. 데이터 이질성 (Data Heterogeneity)
+
+```
+5개 오믹스 × 서로 다른 스케일 × 서로 다른 환자 집합 = 복잡도 폭발
+```
+
+- **Expression**: 20,000+ genes, FPKM/TPM, log2 변환 필요
+- **CNV**: 음수 포함, 정규화 방법 다름
+- **Methylation**: 0-1 beta values, 396,065 CG sites
+- **Mutations**: 0/1/2 이산값
+- **RPPA**: 단백질 발현, 음수 포함
+
+각 오믹스마다 전처리 로직이 달라야 하고, 하나라도 잘못되면 모델이 학습하지 못함.
+
+#### 2. 환자 집합 불일치 (Patient Set Mismatch)
+
+```
+처음 가정: Cox 환자 ⊂ Methylation 환자 (nested)
+실제 현실: Cox ∩ Meth = 4,151명, Cox만 = 353명, Meth만 = 4,073명
+```
+
+- 두 데이터 소스의 환자 집합이 완전히 겹치지 않음
+- "당연히 포함되어 있겠지"라는 가정이 틀림
+- Union 기반으로 재설계 필요 → Missing Modality Learning 도입
+
+#### 3. [value, cox] 쌍 형식의 함정
+
+```python
+# 직관적이지만 틀린 방법
+weighted_feature = gene_value * cox_coefficient  # ❌
+
+# 실제 필요한 방법
+features = [gene_val, gene_cox, ...]  # ✅ 별도 유지
+```
+
+- Cox 계수를 곱해서 하나의 값으로 만들면 정보 손실
+- 모델이 value와 cox를 각각 학습해야 최적의 가중치를 찾음
+- 이 결정 하나가 feature 수를 2배로 늘림 (66,049 → 132,098)
+
+#### 4. 임상 데이터 파편화
+
+```
+파일 1: processed_clinical_data.parquet (4,504명)
+파일 2: processed_clinical_data_for_methylation.parquet (8,224명)
+→ 둘 다 로드해서 병합해야 8,577명 전체 커버
+```
+
+- TCGA 원본 컬럼명 ≠ 모델 기대 컬럼명
+- `gender` → `sex`, `pathologic_stage` → `ajcc_pathologic_stage`
+- 매핑 테이블 직접 작성 필요
+
+#### 5. 메모리와 차원의 저주
+
+```
+Cox encoder input:  132,098 features
+Meth encoder input: 396,065 features
+Total parameters:   ~7.6 billion
+GPU memory:         ~29 GB (batch=32)
+```
+
+- 일반적인 GPU로는 학습 불가
+- RTX A6000 (48GB) 필요
+- 그래도 batch_size 제한적
+
+#### 6. 디버깅의 어려움
+
+```
+에러: "numpy.object_ has no attribute 'astype'"
+원인: parquet 파일의 한 컬럼이 object dtype
+위치: 수십만 개 컬럼 중 어딘가
+해결: select_dtypes(include=[np.number])로 필터링
+```
+
+- 대용량 데이터에서 하나의 잘못된 컬럼 찾기가 극도로 어려움
+- 에러 메시지가 실제 원인을 숨김
+- 로그 출력을 촘촘히 넣어야 디버깅 가능
+
+### 핵심 교훈
+
+| 교훈 | 설명 |
+|------|------|
+| **가정하지 말 것** | "당연히 되겠지"가 가장 위험한 생각 |
+| **환자 집합 먼저 확인** | 데이터 로드 후 즉시 intersection/union 확인 |
+| **작은 단위로 검증** | 전체 파이프라인 전에 각 컴포넌트 단위 테스트 |
+| **로그를 아끼지 말 것** | print문이 미래의 나를 구원함 |
+| **문서화 즉시** | 발견한 문제와 해결책을 바로 기록 |
+
+### 시간 투자 분포 (체감)
+
+```
+실제 모델 코딩:     20%
+데이터 전처리:      30%
+버그 수정:          25%
+환자/컬럼 매핑:     15%
+문서화 및 검증:     10%
+```
+
+> "모델은 쉽다. 데이터가 어렵다."
+
+---
+
 ## 투명성 원칙
 
 이 프로젝트 작업 시 다음을 준수합니다:
