@@ -213,18 +213,21 @@ class HybridMultiModalModel(nn.Module):
         self,
         clinical_cat: torch.Tensor,
         cox_omics: Optional[torch.Tensor] = None,
-        methylation: torch.Tensor = None,
-        cox_mask: Optional[torch.Tensor] = None
+        methylation: Optional[torch.Tensor] = None,
+        cox_mask: Optional[torch.Tensor] = None,
+        meth_mask: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, dict]:
         """
         Forward pass with missing modality support
 
         Args:
             clinical_cat: (batch, 5) categorical clinical features
-            cox_omics: (batch, 143040) Cox-enhanced omics [val, cox] pairs
+            cox_omics: (batch, 132098) Cox-enhanced omics [val, cox] pairs
                        None or zeros for patients without Cox data
             methylation: (batch, 396065) methylation beta values
+                       None or zeros for patients without Methylation data
             cox_mask: (batch,) boolean mask - True if Cox data available
+            meth_mask: (batch,) boolean mask - True if Methylation data available
 
         Returns:
             predictions: (batch, 1) survival risk scores
@@ -251,8 +254,23 @@ class HybridMultiModalModel(nn.Module):
                 device=device, dtype=torch.float32
             )
 
-        # Encode Methylation
-        meth_encoded = self.meth_encoder(methylation)  # (batch, 256)
+        # Encode Methylation (if available)
+        if methylation is not None and meth_mask is not None:
+            # Encode Methylation data for patients who have it
+            meth_encoded = self.meth_encoder(methylation)  # (batch, 256)
+
+            # Zero out Methylation embeddings for patients without Methylation data
+            meth_mask_expanded = meth_mask.unsqueeze(1).float()  # (batch, 1)
+            meth_encoded = meth_encoded * meth_mask_expanded  # (batch, 256)
+        elif methylation is not None:
+            # All patients have Methylation data
+            meth_encoded = self.meth_encoder(methylation)
+        else:
+            # No Methylation data available - use zeros
+            meth_encoded = torch.zeros(
+                batch_size, self.meth_output_dim,
+                device=device, dtype=torch.float32
+            )
 
         # Concatenate continuous features
         continuous = torch.cat([cox_encoded, meth_encoded], dim=1)  # (batch, 512)
@@ -323,15 +341,17 @@ def test_model():
     cox = torch.randn(batch_size, 143040)
     meth = torch.rand(batch_size, 396065)  # Beta values 0-1
     cox_mask = torch.tensor([True]*4 + [False]*4)  # Half with Cox, half without
+    meth_mask = torch.tensor([True]*6 + [False]*2)  # 6 with Meth, 2 without
 
     with torch.no_grad():
-        predictions, features = model(clinical, cox, meth, cox_mask)
+        predictions, features = model(clinical, cox, meth, cox_mask, meth_mask)
 
     print(f"  Input shapes:")
     print(f"    Clinical: {clinical.shape}")
     print(f"    Cox omics: {cox.shape}")
     print(f"    Methylation: {meth.shape}")
     print(f"    Cox mask: {cox_mask.shape} (4 True, 4 False)")
+    print(f"    Meth mask: {meth_mask.shape} (6 True, 2 False)")
     print(f"  Output shape: {predictions.shape}")
     print(f"  Feature shapes:")
     for k, v in features.items():
@@ -341,7 +361,10 @@ def test_model():
     print(f"\nMissing Modality Test:")
     print(f"  Cox encoded mean (with Cox): {features['cox_encoded'][:4].mean():.4f}")
     print(f"  Cox encoded mean (no Cox):   {features['cox_encoded'][4:].mean():.4f}")
-    print(f"  ✅ Cox masking working correctly!" if features['cox_encoded'][4:].abs().max() < 1e-5 else "❌ Masking failed")
+    print(f"  ✅ Cox masking working correctly!" if features['cox_encoded'][4:].abs().max() < 1e-5 else "❌ Cox masking failed")
+    print(f"  Meth encoded mean (with Meth): {features['meth_encoded'][:6].mean():.4f}")
+    print(f"  Meth encoded mean (no Meth):   {features['meth_encoded'][6:].mean():.4f}")
+    print(f"  ✅ Meth masking working correctly!" if features['meth_encoded'][6:].abs().max() < 1e-5 else "❌ Meth masking failed")
 
     print(f"\n{'='*70}")
     print(f"✅ Model test passed!")

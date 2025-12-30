@@ -32,7 +32,7 @@ Cancer Foundation Model은 멀티오믹스 데이터를 활용하여 암 환자�
 │  1. Clinical Categories (5개)                                 │
 │     → Categorical Embedding                                   │
 │                                                               │
-│  2. Cox Omics (143,040 features) [value, cox] 쌍              │
+│  2. Cox Omics (132,098 features) [value, cox] 쌍              │
 │     → FC-NN (2048→512→256)                                    │
 │     → Encoder Dropout (0.3)                                   │
 │     → 256-dim representation                                  │
@@ -68,7 +68,7 @@ Cancer Foundation Model은 멀티오믹스 데이터를 활용하여 암 환자�
 
 | 구분 | 환자 수 | 특성 수 | 비고 |
 |------|---------|---------|------|
-| **Cox Omics** | 4,504명 | 71,520 features | Expression, CNV, microRNA, RPPA, Mutation |
+| **Cox Omics** | 4,504명 | 66,049 features | Expression, CNV, microRNA, RPPA, Mutation |
 | **Methylation** | 8,224명 | 396,065 CG sites | 모든 환자 포함 |
 | **암종** | - | 27개 타입 | BRCA, LUAD, COAD, OV, KIRC 등 |
 
@@ -141,7 +141,7 @@ data/processed/
 **주요 출력물:**
 ```
 data/processed/
-├── integrated_table_cox.parquet    # 4,504 × 143,048 (Cox omics)
+├── integrated_table_cox.parquet    # 4,504 × ~132,106 (Cox omics)
 ├── methylation_table.parquet       # 8,224 × 396,065 (Methylation)
 └── train_val_test_splits.json      # 데이터셋 분할 정보
 ```
@@ -177,7 +177,7 @@ from src.models.hybrid_fc_tabtransformer import HybridMultiModalModel
 # 1. 훈련된 모델 로드
 model = HybridMultiModalModel(
     clinical_categories=(10, 3, 8, 4, 5),
-    cox_input_dim=143040,    # 71,520 * 2 ([val, cox] 쌍)
+    cox_input_dim=132098,    # 66,049 * 2 ([val, cox] 쌍)
     cox_hidden_dims=(2048, 512, 256),
     meth_input_dim=396065,
     meth_hidden_dims=(4096, 1024, 256),
@@ -190,11 +190,11 @@ model.eval()
 
 # 2. 신규 환자 데이터 준비
 # - Clinical: [age_group, sex, race, stage, grade] (categorical)
-# - Cox Omics: [val, cox] 쌍 형식 (143,040 features)
+# - Cox Omics: [val, cox] 쌍 형식 (132,098 features)
 # - Methylation: beta values (396,065 CG sites)
 
 clinical_cat = torch.tensor([[5, 1, 2, 3, 2]], dtype=torch.long)  # (1, 5)
-cox_omics = torch.randn(1, 143040)  # (1, 143040)
+cox_omics = torch.randn(1, 132098)  # (1, 132098)
 methylation = torch.randn(1, 396065)  # (1, 396065)
 cox_mask = torch.tensor([[True]], dtype=torch.bool)  # Cox 데이터 있음
 
@@ -212,7 +212,7 @@ print(f"예측 결과: {'생존 가능성 높음' if survival_prob > 0.5 else '�
 ```python
 # Cox 데이터가 없는 경우
 clinical_cat = torch.tensor([[5, 1, 2, 3, 2]], dtype=torch.long)
-cox_omics = torch.zeros(1, 143040)  # Cox 데이터 없음 → ZERO
+cox_omics = torch.zeros(1, 132098)  # Cox 데이터 없음 → ZERO
 methylation = torch.randn(1, 396065)
 cox_mask = torch.tensor([[False]], dtype=torch.bool)  # Cox 데이터 없음
 
@@ -310,7 +310,7 @@ input = [
 ```python
 HybridMultiModalModel(
     clinical_categories=(10, 3, 8, 4, 5),     # Clinical categorical features
-    cox_input_dim=143040,                      # 71,520 * 2 ([val, cox] 쌍)
+    cox_input_dim=132098,                      # 66,049 * 2 ([val, cox] 쌍)
     cox_hidden_dims=(2048, 512, 256),         # Cox FC-NN layers
     meth_input_dim=396065,                     # Methylation CG sites
     meth_hidden_dims=(4096, 1024, 256),       # Meth FC-NN layers
@@ -326,7 +326,7 @@ HybridMultiModalModel(
 
 **입력:**
 - `clinical_cat`: (batch, 5) - Categorical features
-- `cox_omics`: (batch, 143040) - Cox [val, cox] 쌍
+- `cox_omics`: (batch, 132098) - Cox [val, cox] 쌍
 - `methylation`: (batch, 396065) - Beta values
 - `cox_mask`: (batch,) - Cox 데이터 유무 (True/False)
 
@@ -386,62 +386,27 @@ HybridMultiModalModel(
 
 ---
 
-## 🔧 Troubleshooting
+## 📋 Feature Naming Convention
 
-### 데이터 전처리 버그 (2025-10-24 수정 완료)
-
-#### 문제: 37,446개 중복 컬럼명
-
-초기 구현에서 `integrated_dataset_builder.py`의 feature naming에 버그가 있었습니다:
-
-```python
-# ❌ 버그 있는 코드 (수정 전)
-enhanced_features[f"{feature}_value"] = measured_values[feature]
-enhanced_features[f"{feature}_cox"] = cox_coef_mean[feature]
-# 문제: omics_type 접두사 없음 → 같은 유전자가 여러 omics에 있으면 중복!
-```
-
-**근본 원인**: 동일한 유전자(예: BRCA1, TP53)가 여러 omics 타입(Expression, CNV, Mutations 등)에 존재할 때, omics 타입 구분 없이 feature명을 생성하여 37,446개 중복 컬럼 발생.
-
-#### 해결 방법
-
-```python
-# ✅ 수정된 코드 (2025-10-24)
-enhanced_features[f"{omics_type}_{feature}_val"] = measured_values[feature]
-enhanced_features[f"{omics_type}_{feature}_cox"] = cox_coef_mean[feature]
-```
-
-**수정 내용:**
-1. `omics_type` 접두사 추가: `Expression_`, `CNV_`, `Mutations_` 등
-2. `_value` → `_val`로 변경 (일관성)
-3. 올바른 형식: `Expression_BRCA1|672_val`, `Expression_BRCA1|672_cox`
-
-**영향받는 파일:**
-- `src/preprocessing/integrated_dataset_builder.py:180-183`
-- `data/processed/integrated_table_cox.parquet` (재생성 필요)
-- `data/processed/cox_feature_info.json` (자동 수정됨)
-
-### Feature Naming Convention
-
-**올바른 feature 명명 규칙:**
+Cox omics 데이터의 feature 명명 규칙:
 
 ```
 {OmicsType}_{GeneSymbol}|{EntrezID}_{val|cox}
 
 예시:
-- Expression_TP53|7157_val
-- Expression_TP53|7157_cox
+- Expression_TP53|7157_val    # 측정값
+- Expression_TP53|7157_cox    # Cox 계수
 - CNV_BRCA1|672_val
 - CNV_BRCA1|672_cox
-- Mutations_EGFR|1956_val
-- Mutations_EGFR|1956_cox
 ```
 
-**주의사항:**
-- Expression omics는 `GeneSymbol|EntrezID` 형식 사용
-- CNV, Mutations는 `GeneSymbol`만 사용 (Entrez ID 없음)
-- microRNA는 miRNA 이름 사용 (예: `microRNA_hsa-mir-21_val`)
-- RPPA는 protein 이름 사용 (예: `RPPA_p53_val`)
+| Omics 타입 | 명명 형식 | 예시 |
+|-----------|----------|------|
+| Expression | `{Symbol}\|{EntrezID}` | `Expression_TP53\|7157_val` |
+| CNV | `{Symbol}` | `CNV_BRCA1_val` |
+| Mutations | `{Symbol}` | `Mutations_EGFR_val` |
+| microRNA | miRNA 이름 | `microRNA_hsa-mir-21_val` |
+| RPPA | Protein 이름 | `RPPA_p53_val` |
 
 ---
 

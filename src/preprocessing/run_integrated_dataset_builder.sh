@@ -25,7 +25,7 @@ echo "📅 Started at: $(date)"
 DATA_DIR="../../data/processed"      # Directory with processed omics data
 OUTPUT_DIR="../../data/processed"    # Output directory for integrated datasets
 RESULTS_DIR="../../results"          # Results and summary directory
-MAX_FEATURES=999999              # FC-NN: 모든 features 사용 (실질적 제한 없음)
+MAX_FEATURES=0                   # 0=unlimited, 모든 features 사용
 TRAIN_RATIO=0.7                  # Training set ratio
 VAL_RATIO=0.15                   # Validation set ratio
 TEST_RATIO=0.15                  # Test set ratio
@@ -86,6 +86,7 @@ REQUIRED_FILES=(
     "processed_mutations_data.parquet"
     "methylation_data_for_tabtransformer.parquet"
     "processed_clinical_data.parquet"
+    "processed_clinical_data_for_methylation.parquet"  # 8,224명 전체 임상데이터
 )
 
 echo "Checking for required input files..."

@@ -62,7 +62,7 @@ def parse_arguments():
     parser.add_argument('--val-ratio', type=float, default=0.15, help='Validation set ratio')
     parser.add_argument('--test-ratio', type=float, default=0.15, help='Test set ratio')
     parser.add_argument('--random-seed', type=int, default=42, help='Random seed for reproducibility')
-    parser.add_argument('--max-features-per-omics', type=int, default=5000, help='Maximum features per omics type')
+    parser.add_argument('--max-features-per-omics', type=int, default=0, help='Maximum features per omics type (0=unlimited, uses all features)')
     return parser.parse_args()
 
 def load_cox_results_and_coefficients(data_dir: Path, logger) -> Dict:
@@ -142,16 +142,24 @@ def load_clinical_data(data_dir: Path, logger) -> pd.DataFrame:
         return pd.DataFrame()
 
 def create_cox_enhanced_features(
-    omics_data: pd.DataFrame, 
+    omics_data: pd.DataFrame,
     cox_coefficients: pd.DataFrame,
     omics_type: str,
     logger,
-    max_features: int = 5000
+    max_features: int = 0
 ) -> pd.DataFrame:
     """
     Create Cox-enhanced features by combining measured values with coefficients
-    
-    Returns DataFrame with columns: [feature_name]_value, [feature_name]_cox
+
+    Args:
+        omics_data: DataFrame with omics measurements
+        cox_coefficients: DataFrame with Cox regression coefficients
+        omics_type: Type of omics (Expression, CNV, etc.)
+        logger: Logger instance
+        max_features: Maximum features to use (0=unlimited, uses all features)
+
+    Returns:
+        DataFrame with columns: {omics_type}_{feature}_val, {omics_type}_{feature}_cox
     """
     if omics_data.empty or cox_coefficients.empty:
         logger.warning(f"⚠️  Empty data for {omics_type}")
@@ -191,7 +199,7 @@ def create_integrated_cox_table(
     cox_coefficients_dict: Dict[str, pd.DataFrame], 
     clinical_data: pd.DataFrame,
     logger,
-    max_features_per_omics: int = 5000
+    max_features_per_omics: int = 0  # 0=unlimited, uses all features
 ) -> pd.DataFrame:
     """Create integrated table with Cox-enhanced features (excluding methylation)"""
     logger.info("=" * 60)
@@ -374,7 +382,11 @@ class IntegratedCancerDataset(Dataset):
             # Remove target and non-feature columns from features
             non_feature_cols = [target_column, 'vital_status', 'survival_time_clean', 'survival_event_clean']
             feature_cols = [col for col in self.data_df.columns if col not in non_feature_cols]
-            self.features = self.data_df[feature_cols].values
+
+            # Ensure all features are numeric (filter out object dtype columns)
+            feature_df = self.data_df[feature_cols]
+            numeric_cols = feature_df.select_dtypes(include=[np.number]).columns.tolist()
+            self.features = feature_df[numeric_cols].values.astype(np.float32)
             
         else:
             raise ValueError(f"Target column '{target_column}' not found in data")
@@ -578,9 +590,9 @@ def validate_and_summarize_results(
     logger.info(f"  Memory usage: {integrated_cox_table.memory_usage(deep=True).sum() / 1024**2:.1f} MB")
     
     # Check feature composition
-    value_cols = [col for col in integrated_cox_table.columns if col.endswith('_value')]
+    value_cols = [col for col in integrated_cox_table.columns if col.endswith('_val')]
     cox_cols = [col for col in integrated_cox_table.columns if col.endswith('_cox')]
-    clinical_cols = [col for col in integrated_cox_table.columns if not (col.endswith('_value') or col.endswith('_cox'))]
+    clinical_cols = [col for col in integrated_cox_table.columns if not (col.endswith('_val') or col.endswith('_cox'))]
     
     logger.info(f"  Clinical features: {len(clinical_cols)}")
     logger.info(f"  Measured value features: {len(value_cols)}")
@@ -697,9 +709,19 @@ def main():
             sys.exit(1)
         
         # 5. Create methylation table (separate processing)
+        # Load methylation-specific clinical data (includes all 8,224 patients)
+        methylation_clinical_file = DATA_DIR / 'processed_clinical_data_for_methylation.parquet'
+        if methylation_clinical_file.exists():
+            methylation_clinical_data = pd.read_parquet(methylation_clinical_file)
+            logger.info(f"✅ Loaded methylation clinical data: {methylation_clinical_data.shape[0]} patients")
+        else:
+            logger.warning(f"⚠️  Methylation clinical file not found: {methylation_clinical_file}")
+            logger.warning("   Falling back to standard clinical data (fewer patients)")
+            methylation_clinical_data = clinical_data
+
         methylation_table = create_methylation_table(
-            omics_data.get('methylation', pd.DataFrame()), 
-            clinical_data, logger
+            omics_data.get('methylation', pd.DataFrame()),
+            methylation_clinical_data, logger
         )
         
         if methylation_table.empty:

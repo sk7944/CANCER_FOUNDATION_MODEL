@@ -89,6 +89,7 @@ def train_epoch(model, train_loader, optimizer, criterion, device, epoch):
         cox_omics = batch['cox_omics'].to(device)
         methylation = batch['methylation'].to(device)
         cox_mask = batch['cox_mask'].squeeze(1).to(device)  # (batch,)
+        meth_mask = batch['meth_mask'].squeeze(1).to(device)  # (batch,)
         event_time = batch['event_time'].squeeze(1).to(device)
         event_status = batch['event_status'].squeeze(1).to(device)
 
@@ -104,11 +105,12 @@ def train_epoch(model, train_loader, optimizer, criterion, device, epoch):
         cox_omics = cox_omics[valid_mask]
         methylation = methylation[valid_mask]
         cox_mask = cox_mask[valid_mask]
+        meth_mask = meth_mask[valid_mask]
         labels_3year = labels_3year[valid_mask]
 
         # Forward pass
         optimizer.zero_grad()
-        logits, _ = model(clinical_cat, cox_omics, methylation, cox_mask)
+        logits, _ = model(clinical_cat, cox_omics, methylation, cox_mask, meth_mask)
         logits = logits.squeeze()
 
         # Loss
@@ -148,6 +150,7 @@ def validate(model, val_loader, criterion, device):
             cox_omics = batch['cox_omics'].to(device)
             methylation = batch['methylation'].to(device)
             cox_mask = batch['cox_mask'].squeeze(1).to(device)
+            meth_mask = batch['meth_mask'].squeeze(1).to(device)
             event_time = batch['event_time'].squeeze(1).to(device)
             event_status = batch['event_status'].squeeze(1).to(device)
 
@@ -163,10 +166,11 @@ def validate(model, val_loader, criterion, device):
             cox_omics = cox_omics[valid_mask]
             methylation = methylation[valid_mask]
             cox_mask = cox_mask[valid_mask]
+            meth_mask = meth_mask[valid_mask]
             labels_3year = labels_3year[valid_mask]
 
             # Forward pass
-            logits, _ = model(clinical_cat, cox_omics, methylation, cox_mask)
+            logits, _ = model(clinical_cat, cox_omics, methylation, cox_mask, meth_mask)
             logits = logits.squeeze()
 
             # Loss
