@@ -15,11 +15,11 @@ Cancer Foundation Model은 멀티오믹스 데이터를 활용하여 암 환자�
 ### 핵심 특징
 
 - **🧬 멀티오믹스 통합**: 5개 오믹스 (Expression, CNV, microRNA, RPPA, Mutation) + Methylation
-- **🔬 Missing Modality Learning**: Cox 데이터 있음/없음 모두 처리 가능
-- **📊 고차원 데이터 처리**: FC-NN 기반 Dimension Reduction (143K→256, 396K→256)
+- **🔬 Missing Modality Learning**: Cox 또는 Methylation 데이터 누락 모두 처리 가능
+- **📊 고차원 데이터 처리**: FC-NN 기반 Dimension Reduction (132K→256, 396K→256)
 - **🧠 Cox 회귀계수 활용**: 도메인 지식을 `[측정값, Cox계수]` 쌍으로 모델에 주입
 - **⚡ 효율적 아키텍처**: 29.58GB 모델, 48GB GPU 메모리로 훈련 가능
-- **📈 TCGA 데이터**: 8,224명 환자의 Pan-Cancer 데이터 활용
+- **📈 TCGA 데이터**: 8,577명 환자의 Pan-Cancer 데이터 활용 (Cox ∪ Methylation)
 
 ---
 
@@ -27,7 +27,7 @@ Cancer Foundation Model은 멀티오믹스 데이터를 활용하여 암 환자�
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│  입력: 환자 멀티오믹스 데이터 (8,224명)                         │
+│  입력: 환자 멀티오믹스 데이터 (8,577명)                         │
 ├──────────────────────────────────────────────────────────────┤
 │  1. Clinical Categories (5개)                                 │
 │     → Categorical Embedding                                   │
@@ -54,10 +54,10 @@ Cancer Foundation Model은 멀티오믹스 데이터를 활용하여 암 환자�
 ### Missing Modality Learning
 
 ```
-환자 구성:
-├─ Cox 데이터 있음 (4,504명): Clinical + Cox Omics + Methylation
-└─ Cox 데이터 없음 (3,720명): Clinical + [ZERO] + Methylation
-   → Total: 8,224명 환자 모두 활용
+환자 구성 (8,577명 = Cox ∪ Methylation):
+├─ Cox=✅ Meth=✅ (둘 다):   4,151명 → Clinical + Cox Omics + Methylation
+├─ Cox=✅ Meth=❌ (Cox만):    353명 → Clinical + Cox Omics + [ZERO]
+└─ Cox=❌ Meth=✅ (Meth만): 4,073명 → Clinical + [ZERO] + Methylation
 ```
 
 ---
@@ -68,8 +68,9 @@ Cancer Foundation Model은 멀티오믹스 데이터를 활용하여 암 환자�
 
 | 구분 | 환자 수 | 특성 수 | 비고 |
 |------|---------|---------|------|
-| **Cox Omics** | 4,504명 | 66,049 features | Expression, CNV, microRNA, RPPA, Mutation |
-| **Methylation** | 8,224명 | 396,065 CG sites | 모든 환자 포함 |
+| **전체 (Union)** | 8,577명 | - | Cox ∪ Methylation |
+| **Cox Omics** | 4,504명 | 66,049 × 2 = 132,098 | Expression, CNV, microRNA, RPPA, Mutation |
+| **Methylation** | 8,224명 | 396,065 CG sites | Beta values (0-1) |
 | **암종** | - | 27개 타입 | BRCA, LUAD, COAD, OV, KIRC 등 |
 
 ### 모델 상세
@@ -196,31 +197,39 @@ model.eval()
 clinical_cat = torch.tensor([[5, 1, 2, 3, 2]], dtype=torch.long)  # (1, 5)
 cox_omics = torch.randn(1, 132098)  # (1, 132098)
 methylation = torch.randn(1, 396065)  # (1, 396065)
-cox_mask = torch.tensor([[True]], dtype=torch.bool)  # Cox 데이터 있음
+cox_mask = torch.tensor([True], dtype=torch.bool)   # Cox 데이터 있음
+meth_mask = torch.tensor([True], dtype=torch.bool)  # Methylation 데이터 있음
 
 # 3. 예측 수행
 with torch.no_grad():
-    logit, representation = model(clinical_cat, cox_omics, methylation, cox_mask)
+    logit, representation = model(clinical_cat, cox_omics, methylation, cox_mask, meth_mask)
     survival_prob = torch.sigmoid(logit)
 
 print(f"3년 생존 확률: {survival_prob.item():.2%}")
 print(f"예측 결과: {'생존 가능성 높음' if survival_prob > 0.5 else '생존 가능성 낮음'}")
 ```
 
-### Cox 데이터가 없는 환자
+### Missing Modality 처리 예시
 
 ```python
-# Cox 데이터가 없는 경우
+# Case 1: Cox 데이터가 없는 환자 (Methylation만 있음)
 clinical_cat = torch.tensor([[5, 1, 2, 3, 2]], dtype=torch.long)
-cox_omics = torch.zeros(1, 132098)  # Cox 데이터 없음 → ZERO
-methylation = torch.randn(1, 396065)
-cox_mask = torch.tensor([[False]], dtype=torch.bool)  # Cox 데이터 없음
+cox_omics = torch.zeros(1, 132098)    # Cox 데이터 없음 → ZERO
+methylation = torch.randn(1, 396065)  # Methylation 있음
+cox_mask = torch.tensor([False], dtype=torch.bool)   # Cox 없음
+meth_mask = torch.tensor([True], dtype=torch.bool)   # Meth 있음
 
 with torch.no_grad():
-    logit, representation = model(clinical_cat, cox_omics, methylation, cox_mask)
-    survival_prob = torch.sigmoid(logit)
+    logit, _ = model(clinical_cat, cox_omics, methylation, cox_mask, meth_mask)
 
-print(f"3년 생존 확률: {survival_prob.item():.2%}")
+# Case 2: Methylation 데이터가 없는 환자 (Cox만 있음)
+cox_omics = torch.randn(1, 132098)    # Cox 있음
+methylation = torch.zeros(1, 396065)  # Methylation 없음 → ZERO
+cox_mask = torch.tensor([True], dtype=torch.bool)    # Cox 있음
+meth_mask = torch.tensor([False], dtype=torch.bool)  # Meth 없음
+
+with torch.no_grad():
+    logit, _ = model(clinical_cat, cox_omics, methylation, cox_mask, meth_mask)
 ```
 
 ---
@@ -253,8 +262,8 @@ CANCER_FOUNDATION_MODEL/
 │
 ├── results/                           # 훈련 결과 (timestamped)
 ├── obsolete/                          # 구버전 코드/모델
-└── doc/
-    └── CFM.vibe_coding_guide.md       # 개발자 가이드
+├── doc/                               # 문서
+└── CLAUDE.md                          # AI 개발자 가이드
 ```
 
 ---
@@ -329,10 +338,11 @@ HybridMultiModalModel(
 - `cox_omics`: (batch, 132098) - Cox [val, cox] 쌍
 - `methylation`: (batch, 396065) - Beta values
 - `cox_mask`: (batch,) - Cox 데이터 유무 (True/False)
+- `meth_mask`: (batch,) - Methylation 데이터 유무 (True/False)
 
 **출력:**
 - `logit`: (batch, 1) - 3년 생존 예측 로짓
-- `representation`: (batch, dim) - 중간 임베딩
+- `features`: dict - 중간 임베딩 (cox_encoded, meth_encoded, continuous)
 
 ---
 
@@ -370,8 +380,9 @@ HybridMultiModalModel(
 
 ### 3. Missing Modality 처리
 
-- Cox 데이터 없는 환자: `cox_omics`를 ZERO로, `cox_mask`를 False로 설정
-- 모델은 자동으로 Methylation만 사용하여 예측
+- **Cox 없는 환자**: `cox_omics`를 ZERO로, `cox_mask`를 False로 설정
+- **Methylation 없는 환자**: `methylation`을 ZERO로, `meth_mask`를 False로 설정
+- 모델은 자동으로 사용 가능한 modality만 활용하여 예측
 
 ### 4. GPU 메모리
 
