@@ -13,7 +13,7 @@ OUTPUT_DIR="${RESULTS_DIR}/hybrid_training_$(date +%Y%m%d_%H%M%S)"
 # 데이터 파일
 COX_TABLE="${DATA_DIR}/integrated_table_cox.parquet"
 METH_TABLE="${DATA_DIR}/methylation_table.parquet"
-CLINICAL="${DATA_DIR}/processed_clinical_data_for_methylation.parquet"  # 8,224명 전체
+CLINICAL="${DATA_DIR}/processed_clinical_data_for_methylation.parquet"  # 8,577명 (Union)
 SPLITS="${DATA_DIR}/train_val_test_splits.json"
 
 # 훈련 파라미터

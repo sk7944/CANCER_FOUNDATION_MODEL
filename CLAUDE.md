@@ -311,6 +311,79 @@ bash run_hybrid_training.sh
 
 ## 버그 수정 이력
 
+### 2025-12-31 수정 완료
+
+#### ⚠️ [치명적] Cox 계수 암종 미매핑 버그
+
+**이 버그는 모델의 핵심 기능을 무력화시키는 치명적 버그였음.**
+
+- **문제**: Cox 계수를 환자의 암종에 맞게 매핑하지 않고, 전체 암종의 **평균값**을 사용
+- **위치**: `integrated_dataset_builder.py` - `create_cox_enhanced_features()` 함수
+- **영향**:
+  - 모든 환자가 동일한 Cox 계수를 가짐 (암종 무시)
+  - 암종별 Cox 회귀분석의 의미가 완전히 상실
+  - 모델이 암종 특이적 생존 패턴을 학습할 수 없음
+
+**잘못된 코드:**
+```python
+# ❌ 모든 암종의 평균 사용 (잘못됨!)
+cox_coef_mean = cox_coefficients.loc[common_features].mean(axis=1)
+enhanced_features[f"{omics_type}_{feature}_cox"] = cox_coef_mean[feature]
+```
+
+**수정된 코드:**
+```python
+# ✅ 환자의 암종에 맞는 계수 매핑
+for patient in measured_values.index:
+    cancer_type = patient_cancer_types.get(patient)  # 환자의 암종 조회
+    if cancer_type is not None:
+        cox_values.append(cox_coefficients.loc[feature, cancer_type])  # 해당 암종 계수
+    else:
+        cox_values.append(cox_coef_mean[feature])  # fallback
+```
+
+**검증 방법:**
+```python
+import pandas as pd
+cox = pd.read_parquet('data/processed/integrated_table_cox.parquet')
+
+# 특정 Cox 컬럼의 고유값 확인
+test_col = [c for c in cox.columns if c.endswith('_cox')][0]
+print(f"고유값 수: {cox[test_col].nunique()}")  # 27 이상이어야 함 (암종 수)
+
+# 암종별 값이 다른지 확인
+for cancer in ['BRCA', 'LGG', 'LUAD']:
+    val = cox[cox['acronym'] == cancer][test_col].iloc[0]
+    print(f"  {cancer}: {val:.6f}")  # 값이 달라야 함!
+```
+
+#### 8. Train/Val/Test Splits 누락 버그
+
+- **문제**: Splits가 Cox 환자(4,504명)만 포함, Methylation-only 환자(4,073명) 누락
+- **위치**: `integrated_dataset_builder.py` - `create_stratified_splits()` 함수
+- **영향**: 8,577명 중 4,073명이 훈련에서 제외됨
+
+**수정:**
+- `create_union_stratified_splits()` 함수 추가
+- 8,577명 전체를 Union 기반으로 분할
+- 키 이름 변경: `train` → `train_patients` (patient ID 사용)
+
+**새 splits 구조:**
+```json
+{
+  "train_patients": ["TCGA-XX-XXXX", ...],  // 6,003명 (70%)
+  "val_patients": [...],                     // 1,286명 (15%)
+  "test_patients": [...],                    // 1,288명 (15%)
+  "metadata": {
+    "total_patients": 8577,
+    "split_method": "random",
+    "stratified_by": "cancer_type + modality"
+  }
+}
+```
+
+---
+
 ### 2025-12-30 수정 완료
 
 #### 1. Missing Methylation 미지원 버그
@@ -349,12 +422,26 @@ bash run_hybrid_training.sh
 
 ## 현재 이슈
 
-### 1. 통합 데이터셋 미생성 상태
+### 1. 통합 데이터셋 재생성 필요 ⚠️
+
+**Cox 계수 버그 수정 후 반드시 재실행 필요:**
+
 ```bash
-# 실행 필요
 cd src/preprocessing
 ./run_integrated_dataset_builder.sh
 tail -f integrated_dataset_*.log
+```
+
+**생성 후 반드시 검증:**
+```python
+import pandas as pd
+cox = pd.read_parquet('data/processed/integrated_table_cox.parquet')
+
+# Cox 계수 컬럼의 고유값이 1개면 버그!
+cox_col = [c for c in cox.columns if c.endswith('_cox')][0]
+unique_count = cox[cox_col].nunique()
+assert unique_count > 1, f"❌ Cox 계수가 모두 동일함! (고유값={unique_count})"
+print(f"✅ Cox 계수 검증 통과 (고유값={unique_count})")
 ```
 
 ### 2. 훈련 미실행 상태
@@ -487,6 +574,22 @@ GPU memory:         ~29 GB (batch=32)
 - 에러 메시지가 실제 원인을 숨김
 - 로그 출력을 촘촘히 넣어야 디버깅 가능
 
+#### 7. ⚠️ 설계 의도와 구현의 괴리 (가장 치명적)
+
+```python
+# 설계 의도: 환자의 암종에 맞는 Cox 계수 사용
+# BRCA 환자 → BRCA의 Cox 계수
+# LGG 환자 → LGG의 Cox 계수
+
+# 실제 구현 (잘못됨): 모든 암종의 평균 사용
+cox_coef_mean = cox_coefficients.mean(axis=1)  # ❌ 치명적 버그!
+```
+
+- **문제**: 코드가 "동작"하지만 "의미"가 완전히 틀림
+- **증상**: 에러 없음, 모델 훈련 가능, 하지만 성능 저하
+- **발견**: 출력 데이터를 직접 검사해야만 발견 가능
+- **교훈**: **"동작한다 ≠ 올바르다"** - 출력 데이터 검증 필수
+
 ### 핵심 교훈
 
 | 교훈 | 설명 |
@@ -496,6 +599,24 @@ GPU memory:         ~29 GB (batch=32)
 | **작은 단위로 검증** | 전체 파이프라인 전에 각 컴포넌트 단위 테스트 |
 | **로그를 아끼지 말 것** | print문이 미래의 나를 구원함 |
 | **문서화 즉시** | 발견한 문제와 해결책을 바로 기록 |
+| **⚠️ 출력 데이터 검증** | 생성된 파일을 반드시 샘플링하여 의도대로 생성되었는지 확인 |
+| **⚠️ 암종별 값 확인** | Cox 계수 등 암종별로 달라야 하는 값은 실제로 다른지 검증 |
+
+### 필수 검증 체크리스트
+
+```python
+# 1. 환자 수 검증
+assert len(cox_table) == 4504, "Cox 환자 수 불일치"
+assert len(meth_table) == 8224, "Meth 환자 수 불일치"
+
+# 2. Cox 계수 암종별 다름 검증 (가장 중요!)
+cox_col = [c for c in cox_table.columns if c.endswith('_cox')][0]
+assert cox_table[cox_col].nunique() > 1, "Cox 계수가 모두 동일함!"
+
+# 3. Splits 전체 환자 포함 검증
+total_in_splits = len(train) + len(val) + len(test)
+assert total_in_splits == 8577, "Splits에 누락된 환자 있음"
+```
 
 ### 시간 투자 분포 (체감)
 
@@ -508,6 +629,7 @@ GPU memory:         ~29 GB (batch=32)
 ```
 
 > "모델은 쉽다. 데이터가 어렵다."
+> "동작한다고 올바른 게 아니다."
 
 ---
 
@@ -518,7 +640,8 @@ GPU memory:         ~29 GB (batch=32)
 2. 훈련 시 실제 데이터 크기, 샘플 수 출력
 3. 불확실한 부분은 미리 공유
 4. 작은 단위로 작업하고 결과 확인
+5. **생성된 데이터 파일을 반드시 샘플링하여 검증**
 
 ---
 
-*Last updated: 2025-12-30*
+*Last updated: 2025-12-31*

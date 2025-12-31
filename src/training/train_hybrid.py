@@ -2,9 +2,11 @@
 Hybrid FC-NN + TabTransformer Training Script
 
 3-Year Overall Survival Classification with Missing Modality Learning
-- Cox omics (4,504 patients): Clinical + Cox + Methylation
-- No Cox (3,720 patients): Clinical + [ZERO] + Methylation
-- Total: 8,224 patients
+
+Patient Distribution (8,577 = Cox ∪ Methylation):
+- Cox=✅ Meth=✅ (둘 다):   4,151 patients → Clinical + Cox + Methylation
+- Cox=✅ Meth=❌ (Cox만):    353 patients → Clinical + Cox + [ZERO]
+- Cox=❌ Meth=✅ (Meth만): 4,073 patients → Clinical + [ZERO] + Methylation
 
 Target: 3-year survival (0=alive, 1=death)
 Loss: BCEWithLogitsLoss

@@ -144,54 +144,91 @@ def load_clinical_data(data_dir: Path, logger) -> pd.DataFrame:
 def create_cox_enhanced_features(
     omics_data: pd.DataFrame,
     cox_coefficients: pd.DataFrame,
+    clinical_data: pd.DataFrame,
     omics_type: str,
     logger,
     max_features: int = 0
 ) -> pd.DataFrame:
     """
-    Create Cox-enhanced features by combining measured values with coefficients
+    Create Cox-enhanced features by combining measured values with cancer-type-specific coefficients
 
     Args:
-        omics_data: DataFrame with omics measurements
-        cox_coefficients: DataFrame with Cox regression coefficients
+        omics_data: DataFrame with omics measurements (patients × features)
+        cox_coefficients: DataFrame with Cox regression coefficients (features × cancer_types)
+        clinical_data: DataFrame with patient clinical data (must have 'acronym' column)
         omics_type: Type of omics (Expression, CNV, etc.)
         logger: Logger instance
         max_features: Maximum features to use (0=unlimited, uses all features)
 
     Returns:
         DataFrame with columns: {omics_type}_{feature}_val, {omics_type}_{feature}_cox
+        Cox coefficients are cancer-type-specific for each patient.
     """
     if omics_data.empty or cox_coefficients.empty:
         logger.warning(f"⚠️  Empty data for {omics_type}")
         return pd.DataFrame()
-    
+
     # Find common features between omics data and Cox coefficients
     common_features = list(set(omics_data.columns).intersection(set(cox_coefficients.index)))
-    
+
     if len(common_features) == 0:
         logger.warning(f"⚠️  No common features between {omics_type} data and Cox coefficients")
         return pd.DataFrame()
-    
+
     # FC-NN 사용: 모든 features 사용 (제한 없음)
     logger.info(f"🔬 Creating Cox-enhanced features for {omics_type}: {len(common_features):,} features (ALL features)")
-    
+
     # Get data for common features
     measured_values = omics_data[common_features].copy()
-    
-    # Calculate mean coefficient across cancer types for each feature
-    cox_coef_mean = cox_coefficients.loc[common_features].mean(axis=1)
-    
+
+    # Get available cancer types in Cox coefficients
+    available_cancer_types = set(cox_coefficients.columns)
+    logger.info(f"   Available cancer types in Cox coefficients: {len(available_cancer_types)}")
+
     # Create enhanced feature matrix
     enhanced_features = pd.DataFrame(index=measured_values.index)
-    
-    # Add measured values with omics_type prefix to prevent duplicates
+
+    # Get patient cancer types
+    patient_cancer_types = {}
+    for patient in measured_values.index:
+        if patient in clinical_data.index and 'acronym' in clinical_data.columns:
+            cancer = clinical_data.loc[patient, 'acronym']
+            if pd.notna(cancer) and cancer in available_cancer_types:
+                patient_cancer_types[patient] = cancer
+            else:
+                patient_cancer_types[patient] = None  # Will use mean
+        else:
+            patient_cancer_types[patient] = None
+
+    # Count patients with valid cancer type mapping
+    valid_mapping = sum(1 for v in patient_cancer_types.values() if v is not None)
+    logger.info(f"   Patients with valid cancer type mapping: {valid_mapping}/{len(patient_cancer_types)}")
+
+    # Calculate mean coefficient as fallback for unknown cancer types
+    cox_coef_mean = cox_coefficients.loc[common_features].mean(axis=1)
+
+    # Add measured values and cancer-type-specific Cox coefficients
     # Format: {omics_type}_{gene_symbol|entrez_id}_val and _cox
     for feature in common_features:
+        # Add measured value column
         enhanced_features[f"{omics_type}_{feature}_val"] = measured_values[feature]
-        enhanced_features[f"{omics_type}_{feature}_cox"] = cox_coef_mean[feature]
-    
+
+        # Add Cox coefficient column (cancer-type-specific)
+        cox_values = []
+        for patient in measured_values.index:
+            cancer_type = patient_cancer_types.get(patient)
+            if cancer_type is not None:
+                # Use cancer-type-specific coefficient
+                cox_values.append(cox_coefficients.loc[feature, cancer_type])
+            else:
+                # Fallback to mean coefficient
+                cox_values.append(cox_coef_mean[feature])
+
+        enhanced_features[f"{omics_type}_{feature}_cox"] = cox_values
+
     logger.info(f"✅ Enhanced features created: {enhanced_features.shape[0]} patients × {enhanced_features.shape[1]} features")
-    
+    logger.info(f"   Cox coefficients are cancer-type-specific for {valid_mapping} patients")
+
     return enhanced_features
 
 def create_integrated_cox_table(
@@ -252,10 +289,11 @@ def create_integrated_cox_table(
             logger.warning(f"⚠️  Skipping {omics_type}: no Cox coefficients available")
             continue
         
-        # Create Cox-enhanced features
+        # Create Cox-enhanced features (with cancer-type-specific coefficients)
         enhanced_features = create_cox_enhanced_features(
             omics_data_dict[omics_type].loc[common_patients],
             cox_coefficients_dict[omics_type],
+            clinical_data,  # Pass clinical data for cancer-type-specific Cox mapping
             omics_type,
             logger,
             max_features_per_omics
@@ -467,107 +505,288 @@ class MultiModalCancerDataset(Dataset):
                               if col not in [self.target_column, 'vital_status', 'days_to_death', 'days_to_last_followup']]
         }
 
+def create_union_stratified_splits(
+    cox_table: pd.DataFrame,
+    methylation_table: pd.DataFrame,
+    clinical_df: pd.DataFrame,
+    train_ratio: float = 0.7,
+    val_ratio: float = 0.15,
+    test_ratio: float = 0.15,
+    random_seed: int = 42,
+    logger=None
+) -> Dict[str, List[str]]:
+    """
+    Create stratified train/validation/test splits for Union of Cox and Methylation patients.
+
+    Returns patient IDs (not indices) with keys: train_patients, val_patients, test_patients
+    Stratifies by cancer type + modality availability to ensure balanced distribution.
+    """
+
+    if logger:
+        logger.info("=" * 60)
+        logger.info("CREATING UNION-BASED STRATIFIED DATA SPLITS")
+        logger.info("=" * 60)
+
+    # Validate ratios
+    if not abs(train_ratio + val_ratio + test_ratio - 1.0) < 1e-6:
+        raise ValueError(f"Split ratios must sum to 1.0, got {train_ratio + val_ratio + test_ratio}")
+
+    # Get patient sets
+    cox_patients = set(cox_table.index)
+    meth_patients = set(methylation_table.index)
+    all_patients = sorted(cox_patients | meth_patients)
+
+    if logger:
+        logger.info(f"📊 Cox patients: {len(cox_patients)}")
+        logger.info(f"📊 Methylation patients: {len(meth_patients)}")
+        logger.info(f"📊 Union (total): {len(all_patients)}")
+        logger.info(f"📊 Intersection (both): {len(cox_patients & meth_patients)}")
+        logger.info(f"📊 Cox only: {len(cox_patients - meth_patients)}")
+        logger.info(f"📊 Meth only: {len(meth_patients - cox_patients)}")
+
+    # Create stratification key (cancer_type + modality)
+    strat_info = []
+    for patient in all_patients:
+        # Cancer type from clinical data
+        if patient in clinical_df.index and 'acronym' in clinical_df.columns:
+            cancer = clinical_df.loc[patient, 'acronym']
+            if pd.isna(cancer):
+                cancer = 'UNKNOWN'
+        else:
+            cancer = 'UNKNOWN'
+
+        # Modality availability
+        has_cox = patient in cox_patients
+        has_meth = patient in meth_patients
+        if has_cox and has_meth:
+            modality = 'BOTH'
+        elif has_cox:
+            modality = 'COX_ONLY'
+        else:
+            modality = 'METH_ONLY'
+
+        strat_key = f"{cancer}_{modality}"
+        strat_info.append({
+            'patient_id': patient,
+            'cancer': cancer,
+            'modality': modality,
+            'strat_key': strat_key
+        })
+
+    df = pd.DataFrame(strat_info)
+
+    if logger:
+        logger.info(f"📊 Number of cancer types: {df['cancer'].nunique()}")
+        logger.info(f"📊 Modality distribution:")
+        logger.info(f"    BOTH: {(df['modality'] == 'BOTH').sum()}")
+        logger.info(f"    COX_ONLY: {(df['modality'] == 'COX_ONLY').sum()}")
+        logger.info(f"    METH_ONLY: {(df['modality'] == 'METH_ONLY').sum()}")
+
+    # Handle rare classes (merge classes with < 5 samples)
+    strat_counts = df['strat_key'].value_counts()
+    rare_classes = strat_counts[strat_counts < 5].index.tolist()
+
+    if logger and len(rare_classes) > 0:
+        logger.info(f"📊 Merging {len(rare_classes)} rare classes (< 5 samples)")
+
+    df['strat_key_merged'] = df.apply(
+        lambda x: f"RARE_{x['modality']}" if x['strat_key'] in rare_classes else x['strat_key'],
+        axis=1
+    )
+
+    # Check for remaining rare classes
+    merged_counts = df['strat_key_merged'].value_counts()
+    still_rare = merged_counts[merged_counts < 2].index.tolist()
+    if len(still_rare) > 0:
+        df['strat_key_merged'] = df['strat_key_merged'].apply(
+            lambda x: 'SUPER_RARE' if x in still_rare else x
+        )
+
+    # Perform split
+    patients = df['patient_id'].values
+    strat_keys = df['strat_key_merged'].values
+
+    try:
+        # First split: train vs temp
+        sss1 = StratifiedShuffleSplit(
+            n_splits=1,
+            test_size=(val_ratio + test_ratio),
+            random_state=random_seed
+        )
+        train_idx, temp_idx = next(sss1.split(patients, strat_keys))
+
+        # Second split: val vs test from temp
+        temp_patients = patients[temp_idx]
+        temp_strat = strat_keys[temp_idx]
+        sss2 = StratifiedShuffleSplit(
+            n_splits=1,
+            test_size=0.5,
+            random_state=random_seed
+        )
+        val_idx, test_idx = next(sss2.split(temp_patients, temp_strat))
+
+        train_patients = patients[train_idx].tolist()
+        val_patients = temp_patients[val_idx].tolist()
+        test_patients = temp_patients[test_idx].tolist()
+
+        split_method = "stratified"
+
+        if logger:
+            logger.info(f"✅ Stratified split successful")
+
+    except Exception as e:
+        if logger:
+            logger.warning(f"⚠️ Stratified split failed: {e}")
+            logger.info("🔄 Falling back to random split")
+
+        # Fallback to random split
+        np.random.seed(random_seed)
+        indices = np.random.permutation(len(patients))
+
+        n_train = int(train_ratio * len(patients))
+        n_val = int(val_ratio * len(patients))
+
+        train_patients = patients[indices[:n_train]].tolist()
+        val_patients = patients[indices[n_train:n_train + n_val]].tolist()
+        test_patients = patients[indices[n_train + n_val:]].tolist()
+
+        split_method = "random"
+
+    if logger:
+        logger.info(f"✅ Train: {len(train_patients)} patients ({len(train_patients)/len(all_patients)*100:.1f}%)")
+        logger.info(f"✅ Val: {len(val_patients)} patients ({len(val_patients)/len(all_patients)*100:.1f}%)")
+        logger.info(f"✅ Test: {len(test_patients)} patients ({len(test_patients)/len(all_patients)*100:.1f}%)")
+
+        # Verify modality distribution in each split
+        for split_name, split_pats in [('Train', train_patients), ('Val', val_patients), ('Test', test_patients)]:
+            split_df = df[df['patient_id'].isin(split_pats)]
+            both = (split_df['modality'] == 'BOTH').sum()
+            cox_only = (split_df['modality'] == 'COX_ONLY').sum()
+            meth_only = (split_df['modality'] == 'METH_ONLY').sum()
+            logger.info(f"    {split_name}: BOTH={both}, COX_ONLY={cox_only}, METH_ONLY={meth_only}")
+
+    splits = {
+        'train_patients': train_patients,
+        'val_patients': val_patients,
+        'test_patients': test_patients,
+        'metadata': {
+            'total_patients': len(all_patients),
+            'train_size': len(train_patients),
+            'val_size': len(val_patients),
+            'test_size': len(test_patients),
+            'split_method': split_method,
+            'stratified_by': 'cancer_type + modality',
+            'random_seed': random_seed
+        }
+    }
+
+    return splits
+
+
 def create_stratified_splits(
-    dataset: Dataset, 
-    train_ratio: float = 0.7, 
-    val_ratio: float = 0.15, 
+    dataset: Dataset,
+    train_ratio: float = 0.7,
+    val_ratio: float = 0.15,
     test_ratio: float = 0.15,
     random_seed: int = 42,
     logger=None
 ) -> Dict[str, List[int]]:
-    """Create stratified train/validation/test splits"""
-    
+    """
+    [DEPRECATED] Create stratified train/validation/test splits based on Cox dataset only.
+    Use create_union_stratified_splits() instead for Union-based splits.
+    """
+
     if logger:
         logger.info("=" * 60)
-        logger.info("CREATING STRATIFIED DATA SPLITS")
+        logger.info("CREATING STRATIFIED DATA SPLITS (Cox only - deprecated)")
         logger.info("=" * 60)
-    
+
     # Validate ratios
     if not abs(train_ratio + val_ratio + test_ratio - 1.0) < 1e-6:
         raise ValueError(f"Split ratios must sum to 1.0, got {train_ratio + val_ratio + test_ratio}")
-    
+
     # Get targets for stratification
     targets = [dataset[i][1].item() for i in range(len(dataset))]
     targets = np.array(targets)
-    
+
     if logger:
         logger.info(f"📊 Total samples: {len(targets)}")
         logger.info(f"📊 Number of classes: {len(np.unique(targets))}")
-        
+
         # Show class distribution
         unique_targets, counts = np.unique(targets, return_counts=True)
         for target, count in zip(unique_targets, counts):
             cancer_type = dataset.cancer_types[target] if hasattr(dataset, 'cancer_types') else f"Class_{target}"
             logger.info(f"  {cancer_type}: {count} samples")
-    
+
     # Create indices array
     indices = np.arange(len(targets))
-    
+
     try:
         # First split: train vs (val + test)
         train_test_ratio = val_ratio + test_ratio
-        
+
         sss1 = StratifiedShuffleSplit(
-            n_splits=1, 
-            test_size=train_test_ratio, 
+            n_splits=1,
+            test_size=train_test_ratio,
             random_state=random_seed
         )
         train_indices, temp_indices = next(sss1.split(indices, targets))
-        
+
         # Second split: val vs test from temp
         val_test_ratio = test_ratio / train_test_ratio
-        
+
         sss2 = StratifiedShuffleSplit(
-            n_splits=1, 
-            test_size=val_test_ratio, 
+            n_splits=1,
+            test_size=val_test_ratio,
             random_state=random_seed
         )
         val_indices, test_indices = next(sss2.split(temp_indices, targets[temp_indices]))
-        
+
         # Convert to actual indices
         val_indices = temp_indices[val_indices]
         test_indices = temp_indices[test_indices]
-        
-        splits = {
-            'train': train_indices.tolist(),
-            'val': val_indices.tolist(), 
-            'test': test_indices.tolist()
-        }
-        
-        if logger:
-            logger.info(f"✅ Train: {len(train_indices)} samples ({len(train_indices)/len(targets)*100:.1f}%)")
-            logger.info(f"✅ Val: {len(val_indices)} samples ({len(val_indices)/len(targets)*100:.1f}%)")
-            logger.info(f"✅ Test: {len(test_indices)} samples ({len(test_indices)/len(targets)*100:.1f}%)")
-        
-        return splits
-        
-    except Exception as e:
-        if logger:
-            logger.warning(f"⚠️  Stratified split failed: {e}")
-            logger.info("🔄 Falling back to random split")
-        
-        # Fallback to random split
-        np.random.seed(random_seed)
-        shuffled_indices = np.random.permutation(len(targets))
-        
-        n_train = int(len(targets) * train_ratio)
-        n_val = int(len(targets) * val_ratio)
-        
-        train_indices = shuffled_indices[:n_train]
-        val_indices = shuffled_indices[n_train:n_train + n_val]
-        test_indices = shuffled_indices[n_train + n_val:]
-        
+
         splits = {
             'train': train_indices.tolist(),
             'val': val_indices.tolist(),
             'test': test_indices.tolist()
         }
-        
+
+        if logger:
+            logger.info(f"✅ Train: {len(train_indices)} samples ({len(train_indices)/len(targets)*100:.1f}%)")
+            logger.info(f"✅ Val: {len(val_indices)} samples ({len(val_indices)/len(targets)*100:.1f}%)")
+            logger.info(f"✅ Test: {len(test_indices)} samples ({len(test_indices)/len(targets)*100:.1f}%)")
+
+        return splits
+
+    except Exception as e:
+        if logger:
+            logger.warning(f"⚠️  Stratified split failed: {e}")
+            logger.info("🔄 Falling back to random split")
+
+        # Fallback to random split
+        np.random.seed(random_seed)
+        shuffled_indices = np.random.permutation(len(targets))
+
+        n_train = int(len(targets) * train_ratio)
+        n_val = int(len(targets) * val_ratio)
+
+        train_indices = shuffled_indices[:n_train]
+        val_indices = shuffled_indices[n_train:n_train + n_val]
+        test_indices = shuffled_indices[n_train + n_val:]
+
+        splits = {
+            'train': train_indices.tolist(),
+            'val': val_indices.tolist(),
+            'test': test_indices.tolist()
+        }
+
         if logger:
             logger.info(f"🔄 Random Train: {len(train_indices)} samples")
-            logger.info(f"🔄 Random Val: {len(val_indices)} samples") 
+            logger.info(f"🔄 Random Val: {len(val_indices)} samples")
             logger.info(f"🔄 Random Test: {len(test_indices)} samples")
-        
+
         return splits
 
 def validate_and_summarize_results(
@@ -612,12 +831,21 @@ def validate_and_summarize_results(
     logger.info(f"  Cox dataset: {cox_info['n_samples']} samples × {cox_info['n_features']} features → {cox_info['n_classes']} classes")
     logger.info(f"  Methylation dataset: {methylation_info['n_samples']} samples × {methylation_info['n_features']} features → {methylation_info['n_classes']} classes")
     
-    # Validate splits
-    logger.info("🔍 Data splits validation:")
-    total_samples = len(splits['train']) + len(splits['val']) + len(splits['test'])
+    # Validate splits (Union-based: patient IDs)
+    logger.info("🔍 Data splits validation (Union of Cox + Methylation):")
+    train_patients = splits.get('train_patients', splits.get('train', []))
+    val_patients = splits.get('val_patients', splits.get('val', []))
+    test_patients = splits.get('test_patients', splits.get('test', []))
+    total_samples = len(train_patients) + len(val_patients) + len(test_patients)
+
+    # Union size = Cox + Meth - Intersection
+    cox_patients = set(integrated_cox_table.index)
+    meth_patients = set(methylation_table.index)
+    union_size = len(cox_patients | meth_patients)
+
     logger.info(f"  Total samples in splits: {total_samples}")
-    logger.info(f"  Expected samples: {cox_info['n_samples']}")
-    logger.info(f"  Splits match: {'✅' if total_samples == cox_info['n_samples'] else '❌'}")
+    logger.info(f"  Expected (Union): {union_size}")
+    logger.info(f"  Splits match: {'✅' if total_samples == union_size else '❌'}")
     
     # Cancer type distribution
     logger.info("🔍 Cancer type distribution:")
@@ -644,8 +872,8 @@ def validate_and_summarize_results(
         },
         'splits_validation': {
             'total_samples_in_splits': total_samples,
-            'expected_samples': cox_info['n_samples'],
-            'splits_valid': total_samples == cox_info['n_samples']
+            'expected_samples_union': union_size,
+            'splits_valid': total_samples == union_size
         }
     }
 
@@ -742,9 +970,13 @@ def main():
             methylation_dataset = MultiModalCancerDataset(methylation_table, target_column='acronym')
             logger.info(f"✅ Methylation dataset created: {len(methylation_dataset)} samples")
         
-        # 7. Create stratified splits
-        splits = create_stratified_splits(
-            cox_dataset, 
+        # 7. Create Union-based stratified splits (8,577 patients)
+        # Merge clinical data for all patients
+        merged_clinical = pd.concat([methylation_clinical_data, clinical_data]).drop_duplicates()
+        merged_clinical = merged_clinical[~merged_clinical.index.duplicated(keep='first')]
+
+        splits = create_union_stratified_splits(
+            integrated_cox_table, methylation_table, merged_clinical,
             args.train_ratio, args.val_ratio, args.test_ratio,
             args.random_seed, logger
         )
@@ -783,16 +1015,16 @@ def main():
         dataset_info = {
             'cox_dataset': cox_dataset.get_info() if cox_dataset else {},
             'methylation_dataset': methylation_dataset.get_info() if methylation_dataset else {},
-            'splits': {
-                'train_size': len(splits['train']),
-                'val_size': len(splits['val']),
-                'test_size': len(splits['test']),
+            'splits': splits.get('metadata', {
+                'train_size': len(splits.get('train_patients', [])),
+                'val_size': len(splits.get('val_patients', [])),
+                'test_size': len(splits.get('test_patients', [])),
                 'ratios': {
                     'train': args.train_ratio,
                     'val': args.val_ratio,
                     'test': args.test_ratio
                 }
-            },
+            }),
             'processing_info': {
                 'max_features_per_omics': args.max_features_per_omics,
                 'random_seed': args.random_seed,
