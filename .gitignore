@@ -5,8 +5,8 @@ env/
 env.bak/
 venv.bak/
 
-# Data directories
-data/
+# Data directories (root only, not src/data/)
+/data/
 *.h5
 *.hdf5
 *.pkl
