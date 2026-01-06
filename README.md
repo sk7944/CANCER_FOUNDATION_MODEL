@@ -32,7 +32,7 @@ Cancer Foundation Model은 멀티오믹스 데이터를 활용하여 암 환자�
 │  1. Clinical Categories (5개)                                 │
 │     → Categorical Embedding                                   │
 │                                                               │
-│  2. Cox Omics (132,098 features) [value, cox] 쌍              │
+│  2. Cox Omics (132,100 features) [value, cox] 쌍              │
 │     → FC-NN (2048→512→256)                                    │
 │     → Encoder Dropout (0.3)                                   │
 │     → 256-dim representation                                  │
@@ -69,7 +69,7 @@ Cancer Foundation Model은 멀티오믹스 데이터를 활용하여 암 환자�
 | 구분 | 환자 수 | 특성 수 | 비고 |
 |------|---------|---------|------|
 | **전체 (Union)** | 8,577명 | - | Cox ∪ Methylation |
-| **Cox Omics** | 4,504명 | 66,049 × 2 = 132,098 | Expression, CNV, microRNA, RPPA, Mutation |
+| **Cox Omics** | 4,504명 | 66,050 × 2 = 132,100 | Expression, CNV, microRNA, RPPA, Mutation |
 | **Methylation** | 8,224명 | 396,065 CG sites | Beta values (0-1) |
 | **암종** | - | 27개 타입 | BRCA, LUAD, COAD, OV, KIRC 등 |
 
@@ -142,7 +142,7 @@ data/processed/
 **주요 출력물:**
 ```
 data/processed/
-├── integrated_table_cox.parquet    # 4,504 × ~132,106 (Cox omics)
+├── integrated_table_cox.parquet    # 4,504 × 132,100 (Cox omics only, 임상 제외)
 ├── methylation_table.parquet       # 8,224 × 396,065 (Methylation)
 └── train_val_test_splits.json      # 데이터셋 분할 정보
 ```
@@ -176,9 +176,15 @@ import numpy as np
 from src.models.hybrid_fc_tabtransformer import HybridMultiModalModel
 
 # 1. 훈련된 모델 로드
+# clinical_categories: (age_group, sex, race, stage, grade)
+#   age_group: 10 bins (0-9)
+#   sex: 2 (0=MALE, 1=FEMALE)
+#   race: 6 categories (0-5)
+#   stage: 5 (0=I, 1=II, 2=III, 3=IV, 4=NA)
+#   grade: 4 (G1-G4)
 model = HybridMultiModalModel(
-    clinical_categories=(10, 3, 8, 4, 5),
-    cox_input_dim=132098,    # 66,049 * 2 ([val, cox] 쌍)
+    clinical_categories=(10, 2, 6, 5, 4),
+    cox_input_dim=132100,    # 66,050 * 2 ([val, cox] 쌍)
     cox_hidden_dims=(2048, 512, 256),
     meth_input_dim=396065,
     meth_hidden_dims=(4096, 1024, 256),
@@ -191,11 +197,12 @@ model.eval()
 
 # 2. 신규 환자 데이터 준비
 # - Clinical: [age_group, sex, race, stage, grade] (categorical)
-# - Cox Omics: [val, cox] 쌍 형식 (132,098 features)
+#   예: [5, 1, 2, 2, 1] = 55-59세, FEMALE, ASIAN, Stage III, G2
+# - Cox Omics: [val, cox] 쌍 형식 (132,100 features)
 # - Methylation: beta values (396,065 CG sites)
 
-clinical_cat = torch.tensor([[5, 1, 2, 3, 2]], dtype=torch.long)  # (1, 5)
-cox_omics = torch.randn(1, 132098)  # (1, 132098)
+clinical_cat = torch.tensor([[5, 1, 2, 2, 1]], dtype=torch.long)  # (1, 5)
+cox_omics = torch.randn(1, 132100)  # (1, 132100)
 methylation = torch.randn(1, 396065)  # (1, 396065)
 cox_mask = torch.tensor([True], dtype=torch.bool)   # Cox 데이터 있음
 meth_mask = torch.tensor([True], dtype=torch.bool)  # Methylation 데이터 있음
@@ -213,8 +220,8 @@ print(f"예측 결과: {'생존 가능성 높음' if survival_prob > 0.5 else '�
 
 ```python
 # Case 1: Cox 데이터가 없는 환자 (Methylation만 있음)
-clinical_cat = torch.tensor([[5, 1, 2, 3, 2]], dtype=torch.long)
-cox_omics = torch.zeros(1, 132098)    # Cox 데이터 없음 → ZERO
+clinical_cat = torch.tensor([[5, 1, 2, 2, 1]], dtype=torch.long)
+cox_omics = torch.zeros(1, 132100)    # Cox 데이터 없음 → ZERO
 methylation = torch.randn(1, 396065)  # Methylation 있음
 cox_mask = torch.tensor([False], dtype=torch.bool)   # Cox 없음
 meth_mask = torch.tensor([True], dtype=torch.bool)   # Meth 있음
@@ -223,7 +230,7 @@ with torch.no_grad():
     logit, _ = model(clinical_cat, cox_omics, methylation, cox_mask, meth_mask)
 
 # Case 2: Methylation 데이터가 없는 환자 (Cox만 있음)
-cox_omics = torch.randn(1, 132098)    # Cox 있음
+cox_omics = torch.randn(1, 132100)    # Cox 있음
 methylation = torch.zeros(1, 396065)  # Methylation 없음 → ZERO
 cox_mask = torch.tensor([True], dtype=torch.bool)    # Cox 있음
 meth_mask = torch.tensor([False], dtype=torch.bool)  # Meth 없음
@@ -329,8 +336,14 @@ input = [
 
 ```python
 HybridMultiModalModel(
-    clinical_categories=(10, 3, 8, 4, 5),     # Clinical categorical features
-    cox_input_dim=132098,                      # 66,049 * 2 ([val, cox] 쌍)
+    # clinical_categories: (age_group, sex, race, stage, grade)
+    # - age_group: 10 bins (0=0-29, 1=30-39, ..., 9=80+)
+    # - sex: 2 (0=MALE, 1=FEMALE)
+    # - race: 6 (0=WHITE, 1=BLACK, 2=ASIAN, ..., 5=Unknown)
+    # - stage: 5 (0=I, 1=II, 2=III, 3=IV, 4=NA)
+    # - grade: 4 (0=G1, 1=G2, 2=G3, 3=G4)
+    clinical_categories=(10, 2, 6, 5, 4),
+    cox_input_dim=132100,                      # 66,050 * 2 ([val, cox] 쌍)
     cox_hidden_dims=(2048, 512, 256),         # Cox FC-NN layers
     meth_input_dim=396065,                     # Methylation CG sites
     meth_hidden_dims=(4096, 1024, 256),       # Meth FC-NN layers
@@ -346,7 +359,7 @@ HybridMultiModalModel(
 
 **입력:**
 - `clinical_cat`: (batch, 5) - Categorical features
-- `cox_omics`: (batch, 132098) - Cox [val, cox] 쌍
+- `cox_omics`: (batch, 132100) - Cox [val, cox] 쌍
 - `methylation`: (batch, 396065) - Beta values
 - `cox_mask`: (batch,) - Cox 데이터 유무 (True/False)
 - `meth_mask`: (batch,) - Methylation 데이터 유무 (True/False)

@@ -32,7 +32,7 @@ cd src/preprocessing && ./run_integrated_dataset_builder.sh
 | WSI (병리영상) | ❌ 미착수 | Phase 2-B |
 
 **생성된 데이터:**
-- `integrated_table_cox.parquet`: 4,504 × 132,106 (검증 완료)
+- `integrated_table_cox.parquet`: 4,504 × 132,100 (임상 컬럼 제외, omics만)
 - `methylation_table.parquet`: 8,224 × 396,072
 - `train_val_test_splits.json`: 8,577명 (6,003/1,286/1,288)
 
@@ -144,6 +144,29 @@ assert len(train) + len(val) + len(test) == 8577
 
 ---
 
+## 임상 변수 (Clinical Categories)
+
+`clinical_categories=(10, 2, 6, 5, 4)` - 각 categorical 변수의 카테고리 수
+
+| 순서 | 변수 | 카테고리 수 | 값 범위 | 설명 |
+|------|------|-------------|---------|------|
+| 0 | age_group | 10 | 0-9 | 연령 구간 (0-29, 30-39, ..., 80+) |
+| 1 | sex | 2 | 0-1 | 0=MALE, 1=FEMALE |
+| 2 | race | 6 | 0-5 | WHITE, BLACK, ASIAN, ... , Unknown |
+| 3 | ajcc_pathologic_stage | 5 | 0-4 | 0=I, 1=II, 2=III, 3=IV, **4=NA** |
+| 4 | grade | 4 | 0-3 | G1, G2, G3, G4 |
+
+### Stage 매핑 (서브스테이지 일원화)
+```
+Stage I, IA, IB, IC 등   → 0
+Stage II, IIA, IIB 등    → 1
+Stage III, IIIA, IIIB 등 → 2
+Stage IV, IVA, IVB 등    → 3
+[Not Available], [Unknown] 등 → 4 (NA)
+```
+
+---
+
 ## 훈련 설정
 
 ```python
@@ -154,6 +177,7 @@ optimizer = AdamW(weight_decay=1e-2)
 scheduler = ReduceLROnPlateau(patience=5)
 loss = BCEWithLogitsLoss()
 early_stopping = 15 epochs
+clinical_categories = (10, 2, 6, 5, 4)  # age, sex, race, stage, grade
 ```
 
 ---
@@ -183,6 +207,18 @@ print(f'Unique cox values: {cox[col].nunique()}')  # Must be > 1
 ---
 
 ## 버그 이력 (치명적)
+
+### [2026-01-06] Cox 테이블 임상 컬럼 및 clinical_categories 수정
+
+- **증상**: 훈련 시 `ValueError: could not convert string to float: 'FEMALE'`
+- **원인 1**: `integrated_table_cox.parquet`에 문자열 임상 컬럼 포함 (레거시)
+- **원인 2**: `clinical_categories=(10, 3, 8, 4, 5)` 설정이 실제 데이터 범위와 불일치
+- **수정**:
+  1. Cox 테이블에서 임상 컬럼 6개 제거 (132,106 → 132,100)
+  2. `integrated_dataset_builder.py` 수정: 임상 데이터 제외
+  3. Stage 매핑 일원화: 8개 → 5개 (I, II, III, IV, NA)
+  4. `clinical_categories` 수정: `(10, 2, 6, 5, 4)`
+- **파일**: `hybrid_dataset.py`, `train_hybrid.py`, `hybrid_fc_tabtransformer.py`
 
 ### [2025-12-31] Cox 계수 암종 미매핑
 
@@ -229,4 +265,4 @@ print(f'Unique cox values: {cox[col].nunique()}')  # Must be > 1
 
 ---
 
-*Last updated: 2025-12-31*
+*Last updated: 2026-01-06*

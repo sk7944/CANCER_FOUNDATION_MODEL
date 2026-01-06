@@ -113,7 +113,7 @@ def train_epoch(model, train_loader, optimizer, criterion, device, epoch):
         # Forward pass
         optimizer.zero_grad()
         logits, _ = model(clinical_cat, cox_omics, methylation, cox_mask, meth_mask)
-        logits = logits.squeeze()
+        logits = logits.view(-1)  # 배치 크기 1일 때도 안전하게 처리
 
         # Loss
         loss = criterion(logits, labels_3year)
@@ -173,7 +173,7 @@ def validate(model, val_loader, criterion, device):
 
             # Forward pass
             logits, _ = model(clinical_cat, cox_omics, methylation, cox_mask, meth_mask)
-            logits = logits.squeeze()
+            logits = logits.view(-1)  # 배치 크기 1일 때도 안전하게 처리
 
             # Loss
             loss = criterion(logits, labels_3year)
@@ -250,8 +250,15 @@ def train_hybrid_model(
     print(f"  Methylation: {meth_input_dim:,}")
 
     # Create model
+    # clinical_categories: 각 categorical 변수의 카테고리 수
+    # 순서: [age_group, sex, race, ajcc_pathologic_stage, grade]
+    #   age_group: 10 (0-9, 10개 연령 구간)
+    #   sex: 2 (0=MALE, 1=FEMALE)
+    #   race: 6 (0-5, 6개 인종 카테고리)
+    #   ajcc_pathologic_stage: 5 (0=I, 1=II, 2=III, 3=IV, 4=NA)
+    #   grade: 4 (0=G1, 1=G2, 2=G3, 3=G4)
     model = HybridMultiModalModel(
-        clinical_categories=(10, 3, 8, 4, 5),
+        clinical_categories=(10, 2, 6, 5, 4),
         cox_input_dim=cox_input_dim,
         cox_hidden_dims=(2048, 512, 256),
         meth_input_dim=meth_input_dim,

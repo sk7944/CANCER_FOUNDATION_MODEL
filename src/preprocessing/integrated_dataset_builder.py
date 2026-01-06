@@ -264,20 +264,12 @@ def create_integrated_cox_table(
     common_patients = sorted(list(common_patients))
     
     logger.info(f"📊 Common patients across all Cox omics types: {len(common_patients)}")
-    
-    # Start with clinical data
-    integrated_table = clinical_data.loc[common_patients].copy()
-    
-    # Add essential clinical features
-    essential_clinical_features = [
-        'age_at_initial_pathologic_diagnosis', 'gender', 'race', 'ethnicity',
-        'survival_time_clean', 'survival_event_clean', 'acronym', 'vital_status'
-    ]
-    
-    available_clinical_features = [f for f in essential_clinical_features if f in integrated_table.columns]
-    integrated_table = integrated_table[available_clinical_features]
-    
-    logger.info(f"🏥 Starting with clinical features: {len(available_clinical_features)}")
+
+    # Start with empty DataFrame (omics only, no clinical data)
+    # Clinical data is loaded separately in hybrid_dataset.py during training
+    integrated_table = pd.DataFrame(index=common_patients)
+
+    logger.info(f"🏥 Starting with empty DataFrame (clinical data excluded from Cox table)")
     
     # Process each omics type
     for omics_type in cox_omics_types:

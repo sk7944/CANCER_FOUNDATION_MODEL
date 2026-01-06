@@ -149,8 +149,9 @@ class HybridMultiModalModel(nn.Module):
     """
     def __init__(
         self,
-        # Clinical features
-        clinical_categories: Tuple[int, ...] = (10, 3, 8, 4, 5),  # (age_bin, sex, race, stage, grade)
+        # Clinical features (각 categorical 변수의 카테고리 수)
+        # 순서: [age_group, sex, race, ajcc_pathologic_stage, grade]
+        clinical_categories: Tuple[int, ...] = (10, 2, 6, 5, 4),
 
         # Cox omics encoder
         cox_input_dim: int = 143040,  # Will be updated after data generation
@@ -314,7 +315,7 @@ def test_model():
 
     # Create model
     model = HybridMultiModalModel(
-        clinical_categories=(10, 3, 8, 4, 5),
+        clinical_categories=(10, 2, 6, 5, 4),
         cox_input_dim=143040,
         cox_hidden_dims=(2048, 512, 256),
         meth_input_dim=396065,
