@@ -1066,7 +1066,7 @@ def main():
         logger.info(f"  • Cox integrated table: {integrated_cox_table.shape[0]} patients × {integrated_cox_table.shape[1]:,} features")
         if not methylation_table.empty:
             logger.info(f"  • Methylation table: {methylation_table.shape[0]} patients × {methylation_table.shape[1]:,} features")
-        logger.info(f"  • Train/Val/Test splits: {len(splits['train'])}/{len(splits['val'])}/{len(splits['test'])}")
+        logger.info(f"  • Train/Val/Test splits: {len(splits['train_patients'])}/{len(splits['val_patients'])}/{len(splits['test_patients'])}")
         logger.info(f"  • Number of cancer types: {cox_dataset.n_classes}")
         logger.info(f"📁 Output files saved to: {OUTPUT_DIR}")
         logger.info(f"📈 Summary files saved to: {RESULTS_DIR}")
