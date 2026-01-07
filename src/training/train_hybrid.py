@@ -339,9 +339,11 @@ def train_hybrid_model(
             best_epoch = epoch
             patience_counter = 0
 
+            # Clear CUDA cache and move state dict to CPU for saving
+            torch.cuda.empty_cache()
             checkpoint = {
                 'epoch': epoch,
-                'model_state_dict': model.state_dict(),
+                'model_state_dict': {k: v.cpu() for k, v in model.state_dict().items()},
                 'optimizer_state_dict': optimizer.state_dict(),
                 'scheduler_state_dict': scheduler.state_dict(),
                 'val_auc': val_auc,
@@ -349,6 +351,7 @@ def train_hybrid_model(
                 'history': history
             }
             torch.save(checkpoint, output_dir / 'best_model.pth')
+            del checkpoint  # Free memory immediately
             print(f"  ✅ New best model saved! Val AUC: {val_auc:.4f}")
         else:
             patience_counter += 1
@@ -370,8 +373,10 @@ def train_hybrid_model(
 
     # Test evaluation
     print(f"\nEvaluating on test set...")
-    checkpoint = torch.load(output_dir / 'best_model.pth')
+    torch.cuda.empty_cache()
+    checkpoint = torch.load(output_dir / 'best_model.pth', map_location=device, weights_only=False)
     model.load_state_dict(checkpoint['model_state_dict'])
+    del checkpoint  # Free memory
 
     test_loss, test_auc, test_acc = validate(model, test_loader, criterion, device)
 
