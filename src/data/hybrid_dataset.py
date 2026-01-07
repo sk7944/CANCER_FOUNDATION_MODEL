@@ -218,7 +218,7 @@ class HybridMultiOmicsDataset(Dataset):
         # Clinical categorical
         self.clinical_cat_array = self.clinical_cat.loc[self.all_patients].values
 
-        # Cox omics (fill missing with zeros)
+        # Cox omics (fill missing patients with zeros, fill NaN with 0)
         cox_array_list = []
         for patient in self.all_patients:
             if patient in self.cox_omics.index:
@@ -226,8 +226,10 @@ class HybridMultiOmicsDataset(Dataset):
             else:
                 cox_array_list.append(np.zeros(len(self.cox_omics.columns)))
         self.cox_omics_array = np.array(cox_array_list, dtype=np.float32)
+        # Fill NaN with 0
+        self.cox_omics_array = np.nan_to_num(self.cox_omics_array, nan=0.0, posinf=0.0, neginf=0.0)
 
-        # Methylation (fill missing with zeros)
+        # Methylation (fill missing patients with zeros, fill NaN with 0)
         meth_array_list = []
         for patient in self.all_patients:
             if patient in self.methylation.index:
@@ -235,6 +237,8 @@ class HybridMultiOmicsDataset(Dataset):
             else:
                 meth_array_list.append(np.zeros(len(self.methylation.columns)))
         self.meth_array = np.array(meth_array_list, dtype=np.float32)
+        # Fill NaN with 0
+        self.meth_array = np.nan_to_num(self.meth_array, nan=0.0, posinf=0.0, neginf=0.0)
 
         # Labels
         self.event_times_array = self.event_times.loc[self.all_patients].values.astype(np.float32)

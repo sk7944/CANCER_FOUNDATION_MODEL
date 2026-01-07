@@ -350,22 +350,15 @@ def create_methylation_table(
     
     common_patients = sorted(list(common_patients))
     
-    # Create methylation-specific clinical data
-    methylation_clinical_features = [
-        'age_at_initial_pathologic_diagnosis', 'gender', 'race', 
-        'acronym', 'vital_status', 'days_to_death', 'days_to_last_followup'
-    ]
-    
-    available_features = [f for f in methylation_clinical_features if f in clinical_data.columns]
-    methylation_clinical = clinical_data.loc[common_patients, available_features].copy()
-    
     # FC-NN 사용: 모든 CG 사이트 사용 (제한 없음)
+    # 임상 데이터는 별도 파일에서 로드하므로 methylation 테이블에는 포함하지 않음
     methylation_subset = methylation_data.loc[common_patients]
 
     logger.info(f"🧬 Using ALL {methylation_subset.shape[1]:,} methylation CG sites (no sampling)")
-    
-    # Combine clinical and methylation data
-    methylation_table = pd.concat([methylation_clinical, methylation_subset], axis=1)
+    logger.info(f"🏥 Clinical data excluded from methylation table (loaded separately during training)")
+
+    # Methylation data only (no clinical columns)
+    methylation_table = methylation_subset.copy()
     
     logger.info(f"🎯 Final methylation table: {methylation_table.shape[0]} patients × {methylation_table.shape[1]} features")
 
