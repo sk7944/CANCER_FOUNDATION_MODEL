@@ -373,10 +373,20 @@ def train_hybrid_model(
 
     # Test evaluation
     print(f"\nEvaluating on test set...")
+    # Clear GPU memory before loading checkpoint
+    del model
     torch.cuda.empty_cache()
-    checkpoint = torch.load(output_dir / 'best_model.pth', map_location=device, weights_only=False)
+
+    # Recreate model and load checkpoint (load to CPU first, then move to GPU)
+    model = HybridFCTabTransformer(
+        cox_input_dim=cox_dim,
+        meth_input_dim=meth_dim,
+        clinical_categories=clinical_categories
+    )
+    checkpoint = torch.load(output_dir / 'best_model.pth', map_location='cpu', weights_only=False)
     model.load_state_dict(checkpoint['model_state_dict'])
     del checkpoint  # Free memory
+    model = model.to(device)
 
     test_loss, test_auc, test_acc = validate(model, test_loader, criterion, device)
 

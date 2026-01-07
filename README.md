@@ -18,7 +18,7 @@ Cancer Foundation Model은 멀티오믹스 데이터를 활용하여 암 환자�
 - **🔬 Missing Modality Learning**: Cox 또는 Methylation 데이터 누락 모두 처리 가능
 - **📊 고차원 데이터 처리**: FC-NN 기반 Dimension Reduction (132K→256, 396K→256)
 - **🧠 Cox 회귀계수 활용**: 도메인 지식을 `[측정값, Cox계수]` 쌍으로 모델에 주입
-- **⚡ 효율적 아키텍처**: 29.58GB 모델, 48GB GPU 메모리로 훈련 가능
+- **⚡ 효율적 아키텍처**: 7.14GB 모델 (1.9B params), 48GB GPU 메모리로 훈련 가능
 - **📈 TCGA 데이터**: 8,577명 환자의 Pan-Cancer 데이터 활용 (Cox ∪ Methylation)
 
 ---
@@ -78,12 +78,21 @@ Cancer Foundation Model은 멀티오믹스 데이터를 활용하여 암 환자�
 | 항목 | 값 |
 |------|-----|
 | **아키텍처** | Hybrid FC-NN + TabTransformer |
-| **Cox Encoder** | 2,929M params (11.18 GB) |
-| **Meth Encoder** | 4,509M params (17.20 GB) |
-| **TabTransformer** | 212M params (0.81 GB) |
-| **Total** | 7,651M params (29.19 GB) |
+| **Cox Encoder** | 271M params |
+| **Meth Encoder** | 1,647M params |
+| **TabTransformer** | 17M params |
+| **Total** | 1,936M params (~7.14 GB) |
 | **GPU 메모리** | 48GB (RTX A6000) |
 | **배치 크기** | 32 |
+
+### 성능 (3년 생존 예측)
+
+| 지표 | 값 |
+|------|-----|
+| **Test AUC** | 0.9074 |
+| **Test Accuracy** | 0.8219 |
+| **Best Val AUC** | 0.9234 |
+| **Best Epoch** | 8 |
 
 ---
 
@@ -375,8 +384,8 @@ HybridMultiModalModel(
 ### 훈련 환경
 
 - **GPU**: NVIDIA RTX A6000 (48GB)
-- **모델 크기**: 29.19 GB
-- **훈련 시간**: ~6-8시간 (100 epochs)
+- **모델 크기**: 7.14 GB (1.9B params)
+- **훈련 시간**: ~20분 (8 epochs, early stopping)
 - **배치 크기**: 32
 
 ### 훈련 설정

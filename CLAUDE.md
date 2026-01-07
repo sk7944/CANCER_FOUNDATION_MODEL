@@ -28,12 +28,19 @@ cd src/preprocessing && ./run_integrated_dataset_builder.sh
 |-------|------|------|
 | 데이터 전처리 | ✅ 완료 | Cox 계수 암종별 매핑 완료 |
 | 모델 코드 | ✅ 완료 | Hybrid FC-NN + TabTransformer |
-| 훈련 | ⏳ 대기 | 첫 훈련 실행 전 |
+| 훈련 | ✅ 완료 | Val AUC 0.9234, Test AUC 0.9074 |
 | WSI (병리영상) | ❌ 미착수 | Phase 2-B |
+
+**훈련 결과 (2026-01-07):**
+- Best Epoch: 8
+- **Val AUC: 0.9234**
+- **Test AUC: 0.9074**
+- Test Accuracy: 82.19%
+- 결과 위치: `results/hybrid_training_20260107_170056/`
 
 **생성된 데이터:**
 - `integrated_table_cox.parquet`: 4,504 × 132,100 (임상 컬럼 제외, omics만)
-- `methylation_table.parquet`: 8,224 × 396,072
+- `methylation_table.parquet`: 8,224 × 396,065
 - `train_val_test_splits.json`: 8,577명 (6,003/1,286/1,288)
 
 ---
@@ -46,10 +53,10 @@ cd src/preprocessing && ./run_integrated_dataset_builder.sh
 | Cox + Meth 둘 다 | 4,151명 |
 | Cox만 | 353명 |
 | Meth만 | 4,073명 |
-| Cox features | 132,098 (66,049 × 2) |
+| Cox features | 132,100 (66,050 × 2) |
 | Meth features | 396,065 |
-| 모델 크기 | ~29GB, 7.6B params |
-| GPU 요구사항 | 48GB VRAM |
+| 모델 크기 | ~7.14GB, 1.9B params |
+| GPU 요구사항 | 48GB VRAM (훈련 시 ~44GB 사용) |
 
 ---
 
@@ -207,6 +214,42 @@ print(f'Unique cox values: {cox[col].nunique()}')  # Must be > 1
 ---
 
 ## 버그 이력 (치명적)
+
+### [2026-01-07] CUDA OOM 에러 - 체크포인트 저장/로딩
+
+- **증상 1**: 훈련 중 best model 저장 시 CUDA OOM (`Tried to allocate 6.04 GiB`)
+- **원인 1**: `model.state_dict()`가 GPU 메모리에서 직접 직렬화되어 추가 메모리 필요
+- **수정 1**: state dict를 CPU로 이동 후 저장
+  ```python
+  # Before
+  'model_state_dict': model.state_dict()
+  # After
+  'model_state_dict': {k: v.cpu() for k, v in model.state_dict().items()}
+  ```
+
+- **증상 2**: 테스트 평가 시 체크포인트 로딩에서 CUDA OOM
+- **원인 2**: 훈련 완료 후 모델이 GPU에 남아있는 상태에서 체크포인트를 GPU로 직접 로딩
+- **수정 2**: 기존 모델 삭제 후 CPU로 로드, 그 다음 GPU로 이동
+  ```python
+  del model
+  torch.cuda.empty_cache()
+  model = HybridMultiModalModel(...)  # 새로 생성
+  checkpoint = torch.load(path, map_location='cpu')  # CPU로 먼저 로드
+  model.load_state_dict(checkpoint['model_state_dict'])
+  model = model.to(device)  # 그 다음 GPU로 이동
+  ```
+- **파일**: `train_hybrid.py`
+
+### [2026-01-07] NaN Loss 발생
+
+- **증상**: 훈련 시작 직후 loss가 NaN으로 발산
+- **원인**: 데이터에 NaN/Inf 값 존재 (Cox omics, Methylation 배열)
+- **수정**: `_prepare_arrays()`에서 NaN/Inf를 0으로 대체
+  ```python
+  self.cox_omics_array = np.nan_to_num(self.cox_omics_array, nan=0.0, posinf=0.0, neginf=0.0)
+  self.meth_array = np.nan_to_num(self.meth_array, nan=0.0, posinf=0.0, neginf=0.0)
+  ```
+- **파일**: `hybrid_dataset.py`
 
 ### [2026-01-06] Cox 테이블 임상 컬럼 및 clinical_categories 수정
 
