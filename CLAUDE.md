@@ -76,6 +76,11 @@ cd wsi_model/src/training && bash run_wsi_training.sh
 - Test Accuracy: 82.19%
 - 결과 위치: `multiomics_model/results/hybrid_training_20260107_170056/`
 
+**생성된 데이터:**
+- `integrated_table_cox.parquet`: 4,504 × 132,100 (임상 컬럼 제외, omics만)
+- `methylation_table.parquet`: 8,224 × 396,065
+- `train_val_test_splits.json`: 8,577명 (6,003/1,286/1,288)
+
 ### WSI 모델 (Phase 2-2) ⏳ 예정
 
 - 아키텍처: Swin Transformer
@@ -287,33 +292,95 @@ assert len(train) + len(val) + len(test) == 8577
 | 3 | ajcc_pathologic_stage | 5 | I, II, III, IV, NA |
 | 4 | grade | 4 | G1, G2, G3, G4 |
 
+### Stage 매핑 (서브스테이지 일원화)
+
+```
+Stage I, IA, IB, IC 등   → 0
+Stage II, IIA, IIB 등    → 1
+Stage III, IIIA, IIIB 등 → 2
+Stage IV, IVA, IVB 등    → 3
+[Not Available], [Unknown] 등 → 4 (NA)
+```
+
+---
+
+## 훈련 설정
+
+```python
+epochs = 100
+batch_size = 32
+lr = 1e-4
+optimizer = AdamW(weight_decay=1e-2)
+scheduler = ReduceLROnPlateau(patience=5)
+loss = BCEWithLogitsLoss()
+early_stopping = 15 epochs
+clinical_categories = (10, 2, 6, 5, 4)  # age, sex, race, stage, grade
+```
+
 ---
 
 ## 버그 이력 (치명적)
 
 ### [2026-01-07] CUDA OOM 에러 - 체크포인트 저장/로딩
 
-- **증상**: 훈련 중 best model 저장 및 테스트 평가 시 CUDA OOM
-- **원인**: GPU 메모리에서 직접 직렬화/로드
-- **수정**: state dict를 CPU로 이동 후 저장/로드
+- **증상 1**: 훈련 중 best model 저장 시 CUDA OOM (`Tried to allocate 6.04 GiB`)
+- **원인 1**: `model.state_dict()`가 GPU 메모리에서 직접 직렬화되어 추가 메모리 필요
+- **수정 1**: state dict를 CPU로 이동 후 저장
+  ```python
+  # Before
+  'model_state_dict': model.state_dict()
+  # After
+  'model_state_dict': {k: v.cpu() for k, v in model.state_dict().items()}
+  ```
+
+- **증상 2**: 테스트 평가 시 체크포인트 로딩에서 CUDA OOM
+- **원인 2**: 훈련 완료 후 모델이 GPU에 남아있는 상태에서 체크포인트를 GPU로 직접 로딩
+- **수정 2**: 기존 모델 삭제 후 CPU로 로드, 그 다음 GPU로 이동
+  ```python
+  del model
+  torch.cuda.empty_cache()
+  model = HybridMultiModalModel(...)  # 새로 생성
+  checkpoint = torch.load(path, map_location='cpu')  # CPU로 먼저 로드
+  model.load_state_dict(checkpoint['model_state_dict'])
+  model = model.to(device)  # 그 다음 GPU로 이동
+  ```
 - **파일**: `multiomics_model/src/training/train_hybrid.py`
 
 ### [2026-01-07] NaN Loss 발생
 
 - **증상**: 훈련 시작 직후 loss가 NaN으로 발산
-- **원인**: 데이터에 NaN/Inf 값 존재
-- **수정**: `nan_to_num()` 적용
+- **원인**: 데이터에 NaN/Inf 값 존재 (Cox omics, Methylation 배열)
+- **수정**: `_prepare_arrays()`에서 NaN/Inf를 0으로 대체
+  ```python
+  self.cox_omics_array = np.nan_to_num(self.cox_omics_array, nan=0.0, posinf=0.0, neginf=0.0)
+  self.meth_array = np.nan_to_num(self.meth_array, nan=0.0, posinf=0.0, neginf=0.0)
+  ```
 - **파일**: `multiomics_model/src/data/hybrid_dataset.py`
 
 ### [2026-01-06] Cox 테이블 임상 컬럼 및 clinical_categories 수정
 
-- **증상**: 훈련 시 문자열 → float 변환 에러
-- **수정**: Cox 테이블에서 임상 컬럼 제거, clinical_categories 수정
+- **증상**: 훈련 시 `ValueError: could not convert string to float: 'FEMALE'`
+- **원인 1**: `integrated_table_cox.parquet`에 문자열 임상 컬럼 포함 (레거시)
+- **원인 2**: `clinical_categories=(10, 3, 8, 4, 5)` 설정이 실제 데이터 범위와 불일치
+- **수정**:
+  1. Cox 테이블에서 임상 컬럼 6개 제거 (132,106 → 132,100)
+  2. `integrated_dataset_builder.py` 수정: 임상 데이터 제외
+  3. Stage 매핑 일원화: 8개 → 5개 (I, II, III, IV, NA)
+  4. `clinical_categories` 수정: `(10, 2, 6, 5, 4)`
+- **파일**: `hybrid_dataset.py`, `train_hybrid.py`, `hybrid_fc_tabtransformer.py`
 
 ### [2025-12-31] Cox 계수 암종 미매핑
 
-- **증상**: 모든 환자가 동일한 Cox 계수
-- **수정**: 환자별 암종 조회 후 해당 암종 계수 매핑
+- **증상**: 모든 환자가 동일한 Cox 계수 (암종 무시)
+- **원인**: `mean(axis=1)` 사용 → 모든 암종 평균
+- **수정**: 환자별 암종(acronym) 조회 후 해당 암종 계수 매핑
+- **검증**: `cox[cox_col].nunique() > 1` 확인 필수
+
+### [2025-12-31] Splits 누락
+
+- **증상**: Meth-only 환자 4,073명 훈련에서 제외
+- **원인**: Cox 환자만 splits에 포함
+- **수정**: Union 기반 splits, 키 이름 `train_patients` 사용
 
 ---
 
@@ -351,6 +418,12 @@ print(f'Unique cox values: {cox[col].nunique()}')  # Must be > 1
 
 > "모델은 쉽다. 데이터가 어렵다."
 > "동작한다 ≠ 올바르다."
+
+| 교훈 | 설명 |
+|------|------|
+| 가정하지 말 것 | 환자 집합 겹침을 가정했다가 실패 |
+| 출력 검증 필수 | 생성된 데이터를 샘플링하여 의도대로인지 확인 |
+| 암종별 값 확인 | Cox 계수가 암종별로 다른지 반드시 검증 |
 
 ---
 
