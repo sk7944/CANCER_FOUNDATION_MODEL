@@ -86,7 +86,7 @@ data/processed/
 │ 입력: 8,577명 환자                                       │
 ├─────────────────────────────────────────────────────────┤
 │ Clinical (5 categorical)  → Embedding                   │
-│ Cox Omics (132,098)       → FC: 2048→512→256           │
+│ Cox Omics (132,100)       → FC: 2048→512→256           │
 │ Methylation (396,065)     → FC: 4096→1024→256          │
 ├─────────────────────────────────────────────────────────┤
 │ TabTransformer (dim=128, depth=6, heads=8)             │
@@ -308,4 +308,4 @@ print(f'Unique cox values: {cox[col].nunique()}')  # Must be > 1
 
 ---
 
-*Last updated: 2026-01-06*
+*Last updated: 2026-01-07*

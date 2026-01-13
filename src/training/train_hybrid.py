@@ -378,10 +378,20 @@ def train_hybrid_model(
     torch.cuda.empty_cache()
 
     # Recreate model and load checkpoint (load to CPU first, then move to GPU)
-    model = HybridFCTabTransformer(
-        cox_input_dim=cox_dim,
-        meth_input_dim=meth_dim,
-        clinical_categories=clinical_categories
+    clinical_categories = (10, 2, 6, 5, 4)  # age_group, sex, race, stage, grade
+    model = HybridMultiModalModel(
+        clinical_categories=clinical_categories,
+        cox_input_dim=cox_input_dim,
+        cox_hidden_dims=(2048, 512, 256),
+        meth_input_dim=meth_input_dim,
+        meth_hidden_dims=(4096, 1024, 256),
+        dim=128,
+        depth=6,
+        heads=8,
+        attn_dropout=0.1,
+        ff_dropout=0.1,
+        encoder_dropout=0.3,
+        dim_out=1
     )
     checkpoint = torch.load(output_dir / 'best_model.pth', map_location='cpu', weights_only=False)
     model.load_state_dict(checkpoint['model_state_dict'])
