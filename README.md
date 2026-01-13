@@ -1,487 +1,193 @@
-# 🧬 Cancer Foundation Model
+# Cancer Foundation Model
 
-**멀티오믹스 기반 암 예후 예측 딥러닝 시스템**
+**Explainable AI for Cancer Prognosis Prediction**
 
-[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/release/python-380/)
-[![PyTorch](https://img.shields.io/badge/PyTorch-%23EE4C2C.svg?style=flat&logo=PyTorch&logoColor=white)](https://pytorch.org/)
-[![CUDA](https://img.shields.io/badge/CUDA-Enabled-76B900?style=flat&logo=nvidia&logoColor=white)](https://developer.nvidia.com/cuda-zone)
+멀티오믹스(Multi-omics)와 병리영상(WSI)을 통합하여 암 환자의 예후를 예측하고, 판단 근거를 자연어와 시각적 히트맵으로 제시하는 파운데이션 모델
 
----
-
-## 🎯 프로젝트 개요
-
-Cancer Foundation Model은 멀티오믹스 데이터를 활용하여 암 환자의 3년 생존 예후를 예측하는 **Hybrid FC-NN + TabTransformer** 시스템입니다.
-
-### 핵심 특징
-
-- **🧬 멀티오믹스 통합**: 5개 오믹스 (Expression, CNV, microRNA, RPPA, Mutation) + Methylation
-- **🔬 Missing Modality Learning**: Cox 또는 Methylation 데이터 누락 모두 처리 가능
-- **📊 고차원 데이터 처리**: FC-NN 기반 Dimension Reduction (132K→256, 396K→256)
-- **🧠 Cox 회귀계수 활용**: 도메인 지식을 `[측정값, Cox계수]` 쌍으로 모델에 주입
-- **⚡ 효율적 아키텍처**: 7.14GB 모델 (1.9B params), 48GB GPU 메모리로 훈련 가능
-- **📈 TCGA 데이터**: 8,577명 환자의 Pan-Cancer 데이터 활용 (Cox ∪ Methylation)
+[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
+[![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-EE4C2C.svg)](https://pytorch.org/)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 ---
 
-## 🏗️ 시스템 아키텍처
+## Overview
 
-```
-┌──────────────────────────────────────────────────────────────┐
-│  입력: 환자 멀티오믹스 데이터 (8,577명)                         │
-├──────────────────────────────────────────────────────────────┤
-│  1. Clinical Categories (5개)                                 │
-│     → Categorical Embedding                                   │
-│                                                               │
-│  2. Cox Omics (132,100 features) [value, cox] 쌍              │
-│     → FC-NN (2048→512→256)                                    │
-│     → Encoder Dropout (0.3)                                   │
-│     → 256-dim representation                                  │
-│                                                               │
-│  3. Methylation (396,065 CG sites)                            │
-│     → FC-NN (4096→1024→256)                                   │
-│     → Encoder Dropout (0.3)                                   │
-│     → 256-dim representation                                  │
-├──────────────────────────────────────────────────────────────┤
-│  TabTransformer (dim=128, depth=6, heads=8)                  │
-│     • Clinical embedding + Cox 256-dim + Meth 256-dim         │
-│     • Self-Attention layers (dropout=0.1)                     │
-│     • Cross-modal feature learning                            │
-├──────────────────────────────────────────────────────────────┤
-│  출력: 3년 생존 예측 (0=생존, 1=사망)                          │
-└──────────────────────────────────────────────────────────────┘
-```
+Cancer Foundation Model은 TCGA Pan-Cancer 데이터를 활용하여 암 환자의 3년 생존 예후를 예측합니다.
 
-### Missing Modality Learning
+### Key Features
 
-```
-환자 구성 (8,577명 = Cox ∪ Methylation):
-├─ Cox=✅ Meth=✅ (둘 다):   4,151명 → Clinical + Cox Omics + Methylation
-├─ Cox=✅ Meth=❌ (Cox만):    353명 → Clinical + Cox Omics + [ZERO]
-└─ Cox=❌ Meth=✅ (Meth만): 4,073명 → Clinical + [ZERO] + Methylation
-```
+- **Multi-omics Integration**: 5개 오믹스 데이터 통합 (Expression, CNV, microRNA, RPPA, Mutation) + Methylation
+- **Cox Coefficient Injection**: 도메인 지식을 `[value, cox]` 쌍으로 모델에 주입
+- **Missing Modality Learning**: Cox 또는 Methylation 데이터 누락 환자도 학습 가능
+- **Explainable AI**: LLM 기반 자연어 추론 + Attention Heatmap (예정)
 
 ---
 
-## 📊 데이터 및 성능
+## Project Roadmap
 
-### 데이터셋
+| Phase | Description | Status |
+|-------|-------------|--------|
+| **Phase 1** | Data Preparation | ✅ Complete |
+| **Phase 2-1** | Multi-omics Model (TabTransformer) | ✅ Complete |
+| **Phase 2-2** | WSI Model (Swin Transformer) | ⏳ In Progress |
+| **Phase 3** | Multimodal Fusion + LLM Fine-tuning | Planned |
+| **Phase 4** | Evaluation + XAI Visualization | Planned |
 
-| 구분 | 환자 수 | 특성 수 | 비고 |
-|------|---------|---------|------|
-| **전체 (Union)** | 8,577명 | - | Cox ∪ Methylation |
-| **Cox Omics** | 4,504명 | 66,050 × 2 = 132,100 | Expression, CNV, microRNA, RPPA, Mutation |
-| **Methylation** | 8,224명 | 396,065 CG sites | Beta values (0-1) |
-| **암종** | - | 27개 타입 | BRCA, LUAD, COAD, OV, KIRC 등 |
+---
 
-### 모델 상세
+## Performance
 
-| 항목 | 값 |
-|------|-----|
-| **아키텍처** | Hybrid FC-NN + TabTransformer |
-| **Cox Encoder** | 271M params |
-| **Meth Encoder** | 1,647M params |
-| **TabTransformer** | 17M params |
-| **Total** | 1,936M params (~7.14 GB) |
-| **GPU 메모리** | 48GB (RTX A6000) |
-| **배치 크기** | 32 |
+### Multi-omics Model (Phase 2-1)
 
-### 성능 (3년 생존 예측)
-
-| 지표 | 값 |
-|------|-----|
+| Metric | Value |
+|--------|-------|
 | **Test AUC** | 0.9074 |
-| **Test Accuracy** | 0.8219 |
+| **Test Accuracy** | 82.19% |
 | **Best Val AUC** | 0.9234 |
-| **Best Epoch** | 8 |
+| Patients | 8,577 (27 cancer types) |
+| Parameters | 1.9B (~7.14 GB) |
 
 ---
 
-## 🚀 빠른 시작
+## Quick Start
 
-### 1. 환경 설정
+### 1. Installation
 
 ```bash
-# 저장소 클론
 git clone https://github.com/your-org/CANCER_FOUNDATION_MODEL.git
 cd CANCER_FOUNDATION_MODEL
 
-# 의존성 설치
+# Create conda environment
+conda create -n cfm python=3.10
+conda activate cfm
+
+# Install dependencies
 pip install -r requirements.txt
 pip install tab-transformer-pytorch lifelines
 ```
 
-### 2. 데이터 전처리 (한 번만 실행)
-
-#### Step 1: Cox 회귀분석 실행
+### 2. Training Multi-omics Model
 
 ```bash
-cd src/preprocessing
-./run_cox_feature_engineer.sh
-# 백그라운드 실행, 로그 모니터링: tail -f cox_analysis_*.log
-```
-
-**수행 작업:**
-- TCGA 원본 데이터 로드 및 log2 변환
-- 암종별 Cox 비례위험 회귀분석 수행
-- Cox 계수 룩업 테이블 생성
-- 예상 소요 시간: 1-2시간
-
-**주요 출력물:**
-```
-data/processed/
-├── cox_coefficients_*.parquet          # Cox 계수 (암종 × 유전자)
-├── processed_*_data.parquet            # log2 변환된 오믹스 데이터
-└── processed_clinical_data.parquet     # 임상 데이터
-```
-
-#### Step 2: 통합 데이터셋 생성
-
-```bash
-./run_integrated_dataset_builder.sh
-# 백그라운드 실행, 로그 모니터링: tail -f integrated_dataset_*.log
-```
-
-**수행 작업:**
-- Cox 계수와 측정값을 `[측정값, Cox계수]` 쌍으로 결합
-- 통합 데이터셋 생성 (integrated_table_cox.parquet)
-- Methylation 테이블 생성 (methylation_table.parquet)
-- Train/Val/Test 분할 (70%/15%/15%)
-- 예상 소요 시간: 10-30분
-
-**주요 출력물:**
-```
-data/processed/
-├── integrated_table_cox.parquet    # 4,504 × 132,100 (Cox omics only, 임상 제외)
-├── methylation_table.parquet       # 8,224 × 396,065 (Methylation)
-└── train_val_test_splits.json      # 데이터셋 분할 정보
-```
-
-### 3. 모델 훈련
-
-```bash
-cd ../training
-
-# Hybrid 모델 훈련
+cd multiomics_model/src/training
 bash run_hybrid_training.sh
 ```
 
-**훈련 설정:**
-- Epochs: 100 (early stopping patience=15)
-- Batch size: 32
-- Learning rate: 1e-4 (AdamW, weight_decay=1e-2)
-- Optimizer scheduler: ReduceLROnPlateau (patience=5)
-- Loss: BCEWithLogitsLoss
+### 3. Training WSI Model (Coming Soon)
 
----
-
-## 💡 모델 사용 (추론)
-
-### 신규 환자 데이터 예측
-
-```python
-import torch
-import pandas as pd
-import numpy as np
-from src.models.hybrid_fc_tabtransformer import HybridMultiModalModel
-
-# 1. 훈련된 모델 로드
-# clinical_categories: (age_group, sex, race, stage, grade)
-#   age_group: 10 bins (0-9)
-#   sex: 2 (0=MALE, 1=FEMALE)
-#   race: 6 categories (0-5)
-#   stage: 5 (0=I, 1=II, 2=III, 3=IV, 4=NA)
-#   grade: 4 (G1-G4)
-model = HybridMultiModalModel(
-    clinical_categories=(10, 2, 6, 5, 4),
-    cox_input_dim=132100,    # 66,050 * 2 ([val, cox] 쌍)
-    cox_hidden_dims=(2048, 512, 256),
-    meth_input_dim=396065,
-    meth_hidden_dims=(4096, 1024, 256),
-    dim=128, depth=6, heads=8
-)
-
-checkpoint = torch.load('results/hybrid_training_YYYYMMDD_HHMMSS/best_model.pth')
-model.load_state_dict(checkpoint['model_state_dict'])
-model.eval()
-
-# 2. 신규 환자 데이터 준비
-# - Clinical: [age_group, sex, race, stage, grade] (categorical)
-#   예: [5, 1, 2, 2, 1] = 55-59세, FEMALE, ASIAN, Stage III, G2
-# - Cox Omics: [val, cox] 쌍 형식 (132,100 features)
-# - Methylation: beta values (396,065 CG sites)
-
-clinical_cat = torch.tensor([[5, 1, 2, 2, 1]], dtype=torch.long)  # (1, 5)
-cox_omics = torch.randn(1, 132100)  # (1, 132100)
-methylation = torch.randn(1, 396065)  # (1, 396065)
-cox_mask = torch.tensor([True], dtype=torch.bool)   # Cox 데이터 있음
-meth_mask = torch.tensor([True], dtype=torch.bool)  # Methylation 데이터 있음
-
-# 3. 예측 수행
-with torch.no_grad():
-    logit, representation = model(clinical_cat, cox_omics, methylation, cox_mask, meth_mask)
-    survival_prob = torch.sigmoid(logit)
-
-print(f"3년 생존 확률: {survival_prob.item():.2%}")
-print(f"예측 결과: {'생존 가능성 높음' if survival_prob > 0.5 else '생존 가능성 낮음'}")
-```
-
-### Missing Modality 처리 예시
-
-```python
-# Case 1: Cox 데이터가 없는 환자 (Methylation만 있음)
-clinical_cat = torch.tensor([[5, 1, 2, 2, 1]], dtype=torch.long)
-cox_omics = torch.zeros(1, 132100)    # Cox 데이터 없음 → ZERO
-methylation = torch.randn(1, 396065)  # Methylation 있음
-cox_mask = torch.tensor([False], dtype=torch.bool)   # Cox 없음
-meth_mask = torch.tensor([True], dtype=torch.bool)   # Meth 있음
-
-with torch.no_grad():
-    logit, _ = model(clinical_cat, cox_omics, methylation, cox_mask, meth_mask)
-
-# Case 2: Methylation 데이터가 없는 환자 (Cox만 있음)
-cox_omics = torch.randn(1, 132100)    # Cox 있음
-methylation = torch.zeros(1, 396065)  # Methylation 없음 → ZERO
-cox_mask = torch.tensor([True], dtype=torch.bool)    # Cox 있음
-meth_mask = torch.tensor([False], dtype=torch.bool)  # Meth 없음
-
-with torch.no_grad():
-    logit, _ = model(clinical_cat, cox_omics, methylation, cox_mask, meth_mask)
+```bash
+cd wsi_model/src/training
+bash run_wsi_training.sh
 ```
 
 ---
 
-## 📁 프로젝트 구조
+## Project Structure
 
 ```
 CANCER_FOUNDATION_MODEL/
-├── data/
-│   ├── raw/                           # TCGA 원본 데이터
-│   └── processed/                     # 전처리된 데이터
-│       ├── integrated_table_cox.parquet         # Cox 통합 테이블
-│       ├── methylation_table.parquet            # Methylation 테이블
-│       └── train_val_test_splits.json           # 데이터셋 분할
+├── multiomics_model/           # Multi-omics Model (Phase 2-1)
+│   ├── src/
+│   │   ├── models/             # HybridMultiModalModel
+│   │   ├── data/               # PyTorch Dataset
+│   │   ├── training/           # Training scripts
+│   │   └── preprocessing/      # Data preprocessing
+│   ├── data/                   # TCGA data
+│   └── results/                # Training results
 │
-├── src/
-│   ├── preprocessing/                 # 데이터 전처리
-│   │   ├── cox_feature_engineer.py
-│   │   ├── integrated_dataset_builder.py
-│   │   ├── run_cox_feature_engineer.sh
-│   │   └── run_integrated_dataset_builder.sh
-│   ├── models/
-│   │   ├── hybrid_fc_tabtransformer.py         # Hybrid 모델
-│   │   └── [obsolete files in obsolete/]
-│   ├── data/
-│   │   └── hybrid_dataset.py                   # PyTorch Dataset
-│   └── training/
-│       ├── train_hybrid.py                     # 훈련 스크립트
-│       └── run_hybrid_training.sh              # 훈련 래퍼
+├── wsi_model/                  # WSI Model (Phase 2-2)
+│   ├── src/
+│   │   ├── models/             # Swin Transformer
+│   │   ├── data/               # WSI Dataset
+│   │   └── training/           # Training scripts
+│   └── data/                   # WSI patches
 │
-├── results/                           # 훈련 결과 (timestamped)
-├── obsolete/                          # 구버전 코드/모델
-├── doc/                               # 문서
-└── CLAUDE.md                          # AI 개발자 가이드
+├── doc/                        # Documentation
+├── CLAUDE.md                   # AI Developer Guide
+└── README.md                   # This file
 ```
 
 ---
 
-## 🔬 기술 세부사항
+## Architecture
 
-### Cox 기반 멀티오믹스 파이프라인
+### Multi-omics Model
 
 ```
-Step 1: 원본 데이터 → log2 변환
-  - Expression: log2(x + 1)
-  - CNV: log2(x - min + 1)  [음수 처리]
-  - microRNA: log2(x + 1)
-  - RPPA: log2(x - min + 1)
-  - Mutations: 변환 없음 (impact scores 0-2, 아래 표 참조)
-  - Methylation: 변환 없음 (beta values 0-1)
-
-  📋 Mutation Impact Score 정의:
-  ┌───────┬─────────────────┬─────────────────────────────────────────────┐
-  │ Score │ Impact Level    │ Variant Types                               │
-  ├───────┼─────────────────┼─────────────────────────────────────────────┤
-  │   0   │ No/Low Impact   │ Silent, 3'UTR, 5'UTR, Intron                │
-  │   1   │ Moderate Impact │ Missense, Translation_Start_Site,          │
-  │       │                 │ Nonstop, In_Frame_Del/Ins                   │
-  │   2   │ High Impact     │ Nonsense, Frame_Shift_Del/Ins, Splice_Site │
-  └───────┴─────────────────┴─────────────────────────────────────────────┘
-  ※ 환자-유전자 쌍별로 max() 집계 (가장 심각한 변이 선택)
-
-Step 2: Cox 회귀분석
-  - 암종별로 각 유전자에 대해 Cox 비례위험 회귀분석 수행
-  - Cox 계수 룩업 테이블 생성
-
-Step 3: [측정값, Cox계수] 쌍 생성
-  - 각 유전자마다 2개 값으로 저장:
-    - gene_val: log2 변환된 측정값
-    - gene_cox: Cox 회귀계수
-  - ⚠️ 중요: 곱셈 아님! 별도 2개 값으로 유지
-
-Step 4: Hybrid FC-NN + TabTransformer
-  - FC-NN으로 Dimension Reduction
-  - TabTransformer로 Cross-modal Learning
-  - 3년 생존 예측
+Input: 8,577 patients (27 cancer types)
+├── Clinical (5 categorical) → Embedding
+├── Cox Omics (132,100) → FC: 2048→512→256
+└── Methylation (396,065) → FC: 4096→1024→256
+         ↓
+    TabTransformer (dim=128, depth=6, heads=8)
+         ↓
+    Output: 3-year survival prediction
 ```
 
-### 입력 데이터 형식
+### WSI Model (Planned)
 
-**⚠️ 매우 중요**: 모델은 측정값과 Cox계수를 **곱하지 않고** 별도 2개 값으로 입력받습니다.
-
-```python
-# ❌ 잘못된 방법
-input = [gene1_value * gene1_cox, gene2_value * gene2_cox, ...]
-
-# ✅ 올바른 방법
-input = [
-    gene1_value, gene1_cox,  # 2개 값 쌍
-    gene2_value, gene2_cox,
-    gene3_value, gene3_cox,
-    ...
-]
 ```
-
-### 모델 아키텍처 상세
-
-```python
-HybridMultiModalModel(
-    # clinical_categories: (age_group, sex, race, stage, grade)
-    # - age_group: 10 bins (0=0-29, 1=30-39, ..., 9=80+)
-    # - sex: 2 (0=MALE, 1=FEMALE)
-    # - race: 6 (0=WHITE, 1=BLACK, 2=ASIAN, ..., 5=Unknown)
-    # - stage: 5 (0=I, 1=II, 2=III, 3=IV, 4=NA)
-    # - grade: 4 (0=G1, 1=G2, 2=G3, 3=G4)
-    clinical_categories=(10, 2, 6, 5, 4),
-    cox_input_dim=132100,                      # 66,050 * 2 ([val, cox] 쌍)
-    cox_hidden_dims=(2048, 512, 256),         # Cox FC-NN layers
-    meth_input_dim=396065,                     # Methylation CG sites
-    meth_hidden_dims=(4096, 1024, 256),       # Meth FC-NN layers
-    dim=128,                                   # TabTransformer embedding dim
-    depth=6,                                   # Transformer layers
-    heads=8,                                   # Attention heads
-    attn_dropout=0.1,
-    ff_dropout=0.1,
-    encoder_dropout=0.3,
-    dim_out=1                                  # Binary classification
-)
+Input: Whole Slide Images
+         ↓
+    Patch Extraction (256×256 or 512×512)
+         ↓
+    Swin Transformer (ROI-free training)
+         ↓
+    Output: 3-year survival prediction + Attention Map
 ```
-
-**입력:**
-- `clinical_cat`: (batch, 5) - Categorical features
-- `cox_omics`: (batch, 132100) - Cox [val, cox] 쌍
-- `methylation`: (batch, 396065) - Beta values
-- `cox_mask`: (batch,) - Cox 데이터 유무 (True/False)
-- `meth_mask`: (batch,) - Methylation 데이터 유무 (True/False)
-
-**출력:**
-- `logit`: (batch, 1) - 3년 생존 예측 로짓
-- `features`: dict - 중간 임베딩 (cox_encoded, meth_encoded, continuous)
 
 ---
 
-## 📈 성능 및 검증
+## Data
 
-### 훈련 환경
+### Multi-omics Data
 
-- **GPU**: NVIDIA RTX A6000 (48GB)
-- **모델 크기**: 7.14 GB (1.9B params)
-- **훈련 시간**: ~20분 (8 epochs, early stopping)
-- **배치 크기**: 32
+| Data Type | Features | Transformation |
+|-----------|----------|----------------|
+| Expression | ~20,000 genes | log2(x + 1) |
+| CNV | ~20,000 genes | log2(x - min + 1) |
+| microRNA | ~1,800 miRNAs | log2(x + 1) |
+| RPPA | ~200 proteins | log2(x - min + 1) |
+| Mutations | ~20,000 genes | Impact score (0-2) |
+| Methylation | ~400,000 CpG sites | Beta values (0-1) |
 
-### 훈련 설정
+### Patient Distribution
 
-- **Optimizer**: AdamW (weight_decay=1e-2)
-- **Learning Rate**: 1e-4 (ReduceLROnPlateau)
-- **Loss**: BCEWithLogitsLoss
-- **Early Stopping**: 15 epochs patience
-
----
-
-## ⚠️ 주의사항
-
-### 1. [측정값, Cox계수] 쌍 형식 (매우 중요!)
-
-- ❌ **잘못된 방법**: `value * cox_coefficient` (곱셈)
-- ✅ **올바른 방법**: `[value, cox_coefficient]` (2개 값 스택)
-
-### 2. log2 변환 일관성
-
-- Expression, CNV, microRNA, RPPA: `log2(x + 1)` 필수
-- CNV, RPPA 음수 처리: `log2(x - min + 1)`
-- Methylation, Mutations: 변환 없음
-- **추론 시 동일한 변환 적용 필수**
-
-### 3. Missing Modality 처리
-
-- **Cox 없는 환자**: `cox_omics`를 ZERO로, `cox_mask`를 False로 설정
-- **Methylation 없는 환자**: `methylation`을 ZERO로, `meth_mask`를 False로 설정
-- 모델은 자동으로 사용 가능한 modality만 활용하여 예측
-
-### 4. GPU 메모리
-
-- 48GB GPU 필요 (RTX A6000)
-- 배치 크기 32 권장
-- 메모리 부족 시 배치 크기 줄이기
-
-### 5. 데이터 정렬
-
-- 모든 데이터셋의 환자 ID 정렬 확인
-- 특성 순서 일치 필수
+| Category | Count |
+|----------|-------|
+| Cox + Methylation | 4,151 |
+| Cox only | 353 |
+| Methylation only | 4,073 |
+| **Total** | **8,577** |
 
 ---
 
-## 📋 Feature Naming Convention
+## Citation
 
-Cox omics 데이터의 feature 명명 규칙:
+If you use this work, please cite:
 
-```
-{OmicsType}_{GeneSymbol}|{EntrezID}_{val|cox}
-
-예시:
-- Expression_TP53|7157_val    # 측정값
-- Expression_TP53|7157_cox    # Cox 계수
-- CNV_BRCA1|672_val
-- CNV_BRCA1|672_cox
+```bibtex
+@article{cancer_foundation_model,
+  title={Cancer Foundation Model: Explainable AI for Cancer Prognosis},
+  author={Your Team},
+  year={2026}
+}
 ```
 
-| Omics 타입 | 명명 형식 | 예시 |
-|-----------|----------|------|
-| Expression | `{Symbol}\|{EntrezID}` | `Expression_TP53\|7157_val` |
-| CNV | `{Symbol}` | `CNV_BRCA1_val` |
-| Mutations | `{Symbol}` | `Mutations_EGFR_val` |
-| microRNA | miRNA 이름 | `microRNA_hsa-mir-21_val` |
-| RPPA | Protein 이름 | `RPPA_p53_val` |
+---
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ---
 
-## 📚 참고 문헌
+## Acknowledgments
 
-### 데이터
-
-- **TCGA Research Network** - The Cancer Genome Atlas Pan-Cancer Analysis Project
-- [TCGA Data Portal](https://portal.gdc.cancer.gov/)
-
-### 방법론
-
-- **TabTransformer** - Huang et al., "TabTransformer: Tabular Data Modeling Using Contextual Embeddings"
-- **Cox Regression** - Cox, D. R. (1972). "Regression models and life-tables"
-
-### 구현
-
-- **tab-transformer-pytorch** - [lucidrains/tab-transformer-pytorch](https://github.com/lucidrains/tab-transformer-pytorch)
-- **lifelines** - Cox regression library for Python
+- **TCGA Research Network** - Pan-Cancer genomics data
+- **tab-transformer-pytorch** - TabTransformer implementation
+- **lifelines** - Cox regression analysis
 
 ---
 
-## 🙏 감사의 글
-
-- **TCGA Research Network**: 포괄적인 암 유전체학 데이터 제공
-- **PyTorch Team**: 딥러닝 프레임워크
-- **lucidrains**: 우수한 tab-transformer-pytorch 구현
-- **암 연구 커뮤니티**: 도메인 전문 지식 및 검증
-
----
-
-**🔬 AI를 통한 암 연구 발전**
-
-*Built with ❤️ for the cancer research community*
+*Built for the cancer research community*

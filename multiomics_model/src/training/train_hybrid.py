@@ -28,12 +28,12 @@ import sys
 import warnings
 from datetime import datetime
 
-# Project root
+# Project root (multiomics_model)
 current_dir = Path(__file__).resolve().parent
 project_root = current_dir
-while project_root.name != 'CANCER_FOUNDATION_MODEL' and project_root.parent != project_root:
+while project_root.name != 'multiomics_model' and project_root.parent != project_root:
     project_root = project_root.parent
-if project_root.name == 'CANCER_FOUNDATION_MODEL':
+if project_root.name == 'multiomics_model':
     sys.path.insert(0, str(project_root))
 
 from src.models.hybrid_fc_tabtransformer import HybridMultiModalModel

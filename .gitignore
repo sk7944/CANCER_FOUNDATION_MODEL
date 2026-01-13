@@ -5,12 +5,15 @@ env/
 env.bak/
 venv.bak/
 
-# Data directories (root only, not src/data/)
+# Data directories (large files)
 /data/
+multiomics_model/data/
+wsi_model/data/
 *.h5
 *.hdf5
 *.pkl
 *.pickle
+*.parquet
 
 # Python
 __pycache__/
@@ -48,6 +51,8 @@ wandb/
 
 # Results and outputs
 results/
+multiomics_model/results/
+wsi_model/results/
 logs/
 *.log
 
