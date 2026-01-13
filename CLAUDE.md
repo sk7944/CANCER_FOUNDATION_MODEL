@@ -38,7 +38,7 @@ cd wsi_model/src/training && bash run_wsi_training.sh
 | 작업 | 상태 | 설명 |
 |------|------|------|
 | 1-1. 멀티모달 데이터 다운로드 | ✅ 완료 | TCGA Pan-Cancer 데이터 |
-| 1-2. Multi-omics 특성 공학 | ✅ 완료 | Cox 회귀계수 [value, cox] 쌍 |
+| 1-2. Multi-omics 특성 공학 | ✅ 완료 | Cox 회귀계수 [val, cox] 쌍 |
 | 1-3. 병리영상 전처리 | ⏳ 예정 | WSI 패치 분할 |
 
 ### Phase 2: 단일 모달리티 모델 개발
@@ -162,9 +162,42 @@ multiomics_model/src/
 ├── models/hybrid_fc_tabtransformer.py   # 메인 모델
 ├── data/hybrid_dataset.py               # PyTorch Dataset
 ├── training/train_hybrid.py             # 훈련 스크립트
-└── preprocessing/
-    ├── cox_feature_engineer.py          # Cox 회귀
-    └── integrated_dataset_builder.py    # 데이터 통합
+├── preprocessing/
+│   ├── cox_feature_engineer.py          # Cox 회귀
+│   └── integrated_dataset_builder.py    # 데이터 통합
+└── utils/                               # 추론 파이프라인
+    ├── inference_pipeline.py            # 모델 추론
+    ├── user_data_pipeline.py            # 사용자 데이터 전처리
+    ├── feature_converter.py             # 피처 변환
+    └── data_format_guide.py             # 데이터 형식 가이드
+```
+
+### Utils 사용법
+
+```python
+# 추론 파이프라인
+from multiomics_model.src.utils import InferencePipeline
+
+pipeline = InferencePipeline(
+    model_checkpoint='path/to/best_model.pth',
+    cox_coef_path='path/to/cox_coefficients.parquet'
+)
+
+# 단일 환자 예측
+result = pipeline.predict_single(
+    age=55, sex='FEMALE', race='WHITE', stage='II', grade='G2',
+    cancer_type='BRCA'
+)
+print(f"생존 확률: {result['survival_probability'][0]:.2%}")
+
+# 사용자 데이터 전처리
+from multiomics_model.src.utils import UserDataPipeline
+
+pipeline = UserDataPipeline(cox_coef_path='path/to/cox_coefficients.parquet')
+result = pipeline.process_user_data(
+    user_files={'expression': 'expr.csv', 'methylation': 'meth.csv'},
+    cancer_type='BRCA'
+)
 ```
 
 ---
@@ -196,12 +229,12 @@ Swin Transformer 훈련 (Phase 2-2)
 
 ## 절대 규칙 (MUST)
 
-### 1. [value, cox] 쌍 형식
+### 1. [val, cox] 쌍 형식
 ```python
 # ❌ 절대 금지: 곱셈
-input = gene_value * gene_cox
+input = gene_val * gene_cox
 
-# ✅ 올바름: 별도 유지
+# ✅ 올바름: 별도 유지 (훈련 데이터 형식: {feature}_val, {feature}_cox)
 input = [gene_val, gene_cox, gene_val, gene_cox, ...]
 ```
 

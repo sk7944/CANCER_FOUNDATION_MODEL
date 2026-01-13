@@ -1,16 +1,21 @@
 #!/usr/bin/env python3
 """
-Feature Format Converter for User Data
-=====================================
+Feature Format Converter for HybridMultiModalModel
+===================================================
 
-This module converts user input features to match the trained model format.
-Handles gene symbols, Entrez IDs, protein names, and other feature mappings.
+This module converts user input features to match the trained HybridMultiModalModel format.
+Handles gene symbols, Entrez IDs, protein names, and [value, cox] pair generation.
+
+Key Features:
+- Convert user gene symbols to model format (SYMBOL|ENTREZ)
+- Create [value, cox] pairs with cancer-type-specific Cox coefficients
+- Support for all omics types: Expression, CNV, microRNA, RPPA, Mutations
 
 Usage:
-    from src.utils.feature_converter import FeatureConverter
-    
+    from multiomics_model.src.utils.feature_converter import FeatureConverter
+
     converter = FeatureConverter('path/to/feature_metadata.json')
-    converted_data = converter.convert_user_data(user_df)
+    converted_data, missing_mask, report = converter.convert_user_data(user_df, 'expression')
 """
 
 import pandas as pd
@@ -22,470 +27,518 @@ from typing import Dict, List, Tuple, Optional, Union
 import re
 from collections import defaultdict
 
+
 class FeatureConverter:
-    """Convert user features to trained model format"""
-    
-    def __init__(self, feature_metadata_path: str, logger=None):
+    """
+    Convert user features to HybridMultiModalModel format
+
+    Supports:
+    - Gene symbol/Entrez ID mapping for Expression
+    - Gene symbol mapping for CNV, Mutations
+    - microRNA name mapping
+    - Protein name mapping for RPPA
+    - [value, cox] pair generation
+    """
+
+    # Omics type prefixes used in training data
+    OMICS_PREFIXES = {
+        'expression': 'Expression',
+        'cnv': 'CNV',
+        'microrna': 'microRNA',
+        'rppa': 'RPPA',
+        'mutations': 'Mutations'
+    }
+
+    def __init__(self,
+                 feature_metadata_path: str,
+                 logger: Optional[logging.Logger] = None):
         """
         Initialize converter with trained model feature metadata
-        
+
         Args:
             feature_metadata_path: Path to feature_metadata.json from training
             logger: Optional logger instance
         """
         self.logger = logger or self._setup_logger()
         self.feature_metadata_path = Path(feature_metadata_path)
-        
+
         # Load feature metadata
         self.metadata = self._load_metadata()
-        
-        # Create mapping dictionaries
+
+        # Create mapping dictionaries for each omics type
         self.gene_mappings = self._create_gene_mappings()
         self.protein_mappings = self._create_protein_mappings()
         self.clinical_mappings = self._create_clinical_mappings()
-        
-        self.logger.info("✅ FeatureConverter initialized successfully")
-        self.logger.info(f"📊 Loaded {len(self.metadata.get('feature_columns', []))} trained features")
-    
-    def _setup_logger(self):
+
+        # Extract trained feature lists by omics type
+        self.trained_features_by_type = self._categorize_trained_features()
+
+        self.logger.info("FeatureConverter initialized for HybridMultiModalModel")
+        self.logger.info(f"  Total trained features: {len(self.metadata.get('feature_columns', []))}")
+
+    def _setup_logger(self) -> logging.Logger:
         """Setup default logger"""
         logging.basicConfig(level=logging.INFO)
         return logging.getLogger(__name__)
-    
+
     def _load_metadata(self) -> Dict:
         """Load feature metadata from training"""
         try:
             with open(self.feature_metadata_path, 'r') as f:
                 metadata = json.load(f)
-            self.logger.info(f"✅ Loaded feature metadata: {self.feature_metadata_path}")
+            self.logger.info(f"Loaded feature metadata: {self.feature_metadata_path}")
             return metadata
         except Exception as e:
-            self.logger.error(f"❌ Failed to load metadata: {e}")
+            self.logger.error(f"Failed to load metadata: {e}")
             return {}
-    
-    def _create_gene_mappings(self) -> Dict[str, str]:
-        """Create comprehensive gene symbol/ID mappings"""
-        gene_mappings = {}
-        
-        # Extract from feature columns (SYMBOL|ENTREZ format)
+
+    def _categorize_trained_features(self) -> Dict[str, List[str]]:
+        """Categorize trained features by omics type"""
+        features_by_type = {
+            'expression': [],
+            'cnv': [],
+            'microrna': [],
+            'rppa': [],
+            'mutations': [],
+            'methylation': [],
+            'clinical': []
+        }
+
         for feature in self.metadata.get('feature_columns', []):
-            # Process different omics types
-            if feature.startswith('Expression_') and (feature.endswith('_value') or feature.endswith('_cox')):
-                # Remove Expression_ prefix and _value/_cox suffix
-                gene_part = feature.replace('Expression_', '').replace('_value', '').replace('_cox', '')
-                
+            # Identify omics type by prefix
+            for omics_type, prefix in self.OMICS_PREFIXES.items():
+                if feature.startswith(f"{prefix}_"):
+                    features_by_type[omics_type].append(feature)
+                    break
+            else:
+                # Check for methylation (cg prefix) or clinical
+                if feature.startswith('cg'):
+                    features_by_type['methylation'].append(feature)
+                else:
+                    features_by_type['clinical'].append(feature)
+
+        return features_by_type
+
+    def _create_gene_mappings(self) -> Dict[str, Dict[str, str]]:
+        """
+        Create comprehensive gene symbol/ID mappings for each omics type
+
+        Returns:
+            Dict mapping omics_type -> {user_symbol -> trained_feature_base}
+        """
+        gene_mappings = {
+            'expression': {},
+            'cnv': {},
+            'mutations': {},
+            'microrna': {}
+        }
+
+        for feature in self.metadata.get('feature_columns', []):
+            # Expression features: Expression_SYMBOL|ENTREZ_val/cox
+            if feature.startswith('Expression_') and (feature.endswith('_val') or feature.endswith('_cox')):
+                gene_part = feature.replace('Expression_', '').replace('_val', '').replace('_cox', '')
+
                 if '|' in gene_part:
                     symbol, entrez = gene_part.split('|', 1)
-                    # Map both symbol and entrez to the original gene_part
-                    gene_mappings[symbol.upper()] = gene_part
-                    gene_mappings[entrez] = gene_part
-                    # Also try without case sensitivity
-                    gene_mappings[symbol.lower()] = gene_part
-                    # Also map symbol without suffix (for user convenience)
-                    gene_mappings[symbol] = gene_part
-                else:
-                    # Single identifier
-                    gene_mappings[gene_part.upper()] = gene_part
-                    gene_mappings[gene_part.lower()] = gene_part
-                    gene_mappings[gene_part] = gene_part
-            
-            # Process CNV and Mutations (Symbol only, no Entrez)
-            elif (feature.startswith('CNV_') or feature.startswith('Mutations_')) and (feature.endswith('_value') or feature.endswith('_cox')):
-                # Extract the omics prefix
-                prefix = feature.split('_')[0] + '_'
-                gene_symbol = feature.replace(prefix, '').replace('_value', '').replace('_cox', '')
-                
-                # CNV and Mutations use Symbol only (no Entrez ID)
-                gene_mappings[gene_symbol.upper()] = gene_symbol
-                gene_mappings[gene_symbol.lower()] = gene_symbol
-                gene_mappings[gene_symbol] = gene_symbol
-            
-            # Process microRNA (specific miRNA names)
-            elif feature.startswith('microRNA_') and (feature.endswith('_value') or feature.endswith('_cox')):
-                # Extract miRNA name
-                mirna_name = feature.replace('microRNA_', '').replace('_value', '').replace('_cox', '')
-                
-                # microRNA names are typically like hsa-mir-21
-                gene_mappings[mirna_name.upper()] = mirna_name
-                gene_mappings[mirna_name.lower()] = mirna_name
-                gene_mappings[mirna_name] = mirna_name
-        
-        self.logger.info(f"📊 Created {len(gene_mappings)} gene mappings")
+                    # Map multiple variations
+                    for key in [symbol, symbol.upper(), symbol.lower(), entrez, gene_part]:
+                        if key:
+                            gene_mappings['expression'][key] = gene_part
+
+            # CNV features: CNV_SYMBOL_val/cox
+            elif feature.startswith('CNV_') and (feature.endswith('_val') or feature.endswith('_cox')):
+                gene_symbol = feature.replace('CNV_', '').replace('_val', '').replace('_cox', '')
+                for key in [gene_symbol, gene_symbol.upper(), gene_symbol.lower()]:
+                    gene_mappings['cnv'][key] = gene_symbol
+
+            # Mutations features: Mutations_SYMBOL_val/cox
+            elif feature.startswith('Mutations_') and (feature.endswith('_val') or feature.endswith('_cox')):
+                gene_symbol = feature.replace('Mutations_', '').replace('_val', '').replace('_cox', '')
+                for key in [gene_symbol, gene_symbol.upper(), gene_symbol.lower()]:
+                    gene_mappings['mutations'][key] = gene_symbol
+
+            # microRNA features: microRNA_hsa-mir-XX_val/cox
+            elif feature.startswith('microRNA_') and (feature.endswith('_val') or feature.endswith('_cox')):
+                mirna_name = feature.replace('microRNA_', '').replace('_val', '').replace('_cox', '')
+                for key in [mirna_name, mirna_name.upper(), mirna_name.lower()]:
+                    gene_mappings['microrna'][key] = mirna_name
+
+        for omics_type, mappings in gene_mappings.items():
+            if mappings:
+                self.logger.info(f"  {omics_type} mappings: {len(mappings)}")
+
         return gene_mappings
-    
+
     def _create_protein_mappings(self) -> Dict[str, str]:
         """Create protein name mappings for RPPA data"""
         protein_mappings = {}
-        
+
         # Common RPPA protein name variations
         protein_aliases = {
-            # Antibody name variations commonly seen in RPPA data
             'p53': ['TP53', 'P53', 'p53', 'Tp53'],
             'EGFR': ['EGFR', 'EGF-R', 'ERBB1'],
             'HER2': ['ERBB2', 'HER2', 'Her2', 'NEU'],
             'AKT': ['AKT1', 'PKB', 'AKT', 'Akt'],
             'mTOR': ['MTOR', 'mTOR', 'FRAP1'],
-            'p70S6K1': ['RPS6KB1', 'S6K1', 'p70S6K1'],
             'PTEN': ['PTEN', 'Pten'],
-            'GSK3': ['GSK3B', 'GSK3', 'GSK3-beta'],
-            'beta-Catenin': ['CTNNB1', 'CTNBB1', 'beta-Catenin', 'β-Catenin'],
-            'E-Cadherin': ['CDH1', 'E-Cadherin', 'E_Cadherin'],
-            'Vimentin': ['VIM', 'Vimentin'],
-            'Snail': ['SNAI1', 'Snail'],
-            'Slug': ['SNAI2', 'Slug'],
-            'ZEB1': ['ZEB1', 'Zeb1'],
-            'Twist': ['TWIST1', 'Twist'],
-            # Phosphorylation states
-            'p-AKT': ['AKT_pS473', 'AKT_pT308', 'pAKT', 'p-Akt'],
-            'p-mTOR': ['MTOR_pS2448', 'p-mTOR', 'pmTOR'],
-            'p-p70S6K1': ['RPS6KB1_pT389', 'p-p70S6K1', 'pp70S6K1'],
-            'p-S6': ['RPS6_pS235_S236', 'p-S6', 'pS6'],
+            'ERK': ['MAPK1', 'ERK2', 'ERK'],
         }
-        
-        # Create bidirectional mappings
+
+        # Add canonical mappings
         for canonical, aliases in protein_aliases.items():
             for alias in aliases:
                 protein_mappings[alias.upper()] = canonical
                 protein_mappings[alias.lower()] = canonical
                 protein_mappings[alias] = canonical
-        
-        # Extract from trained features
+
+        # Extract from trained RPPA features
         for feature in self.metadata.get('feature_columns', []):
-            if feature.endswith('_value') or feature.endswith('_cox'):
-                protein_part = feature.replace('_value', '').replace('_cox', '')
-                protein_mappings[protein_part.upper()] = protein_part
-                protein_mappings[protein_part.lower()] = protein_part
-        
-        self.logger.info(f"📊 Created {len(protein_mappings)} protein mappings")
+            if feature.startswith('RPPA_') and (feature.endswith('_val') or feature.endswith('_cox')):
+                protein_part = feature.replace('RPPA_', '').replace('_val', '').replace('_cox', '')
+                # Extract base protein name (before any vendor codes)
+                base_protein = protein_part.split('-')[0] if '-' in protein_part else protein_part
+                protein_mappings[base_protein.upper()] = protein_part
+                protein_mappings[base_protein.lower()] = protein_part
+                protein_mappings[protein_part] = protein_part
+
+        self.logger.info(f"  Protein mappings: {len(protein_mappings)}")
         return protein_mappings
-    
+
     def _create_clinical_mappings(self) -> Dict[str, str]:
         """Create clinical feature mappings"""
-        clinical_mappings = {}
-        
-        # Common clinical feature name variations
-        clinical_aliases = {
-            'age_at_initial_pathologic_diagnosis': [
-                'age', 'age_at_diagnosis', 'diagnosis_age', 'patient_age'
-            ],
-            'gender': [
-                'sex', 'gender', 'patient_gender', 'patient_sex'
-            ],
-            'race': [
-                'race', 'ethnicity', 'patient_race'
-            ],
-            'acronym': [
-                'cancer_type', 'tumor_type', 'cancer', 'type', 'diagnosis'
-            ],
-            'vital_status': [
-                'vital_status', 'status', 'survival_status'
-            ]
+        clinical_mappings = {
+            # Age mappings
+            'age': 'age_group',
+            'age_at_diagnosis': 'age_group',
+            'age_at_initial_pathologic_diagnosis': 'age_group',
+            'patient_age': 'age_group',
+
+            # Sex mappings
+            'sex': 'sex',
+            'gender': 'sex',
+            'patient_gender': 'sex',
+            'patient_sex': 'sex',
+
+            # Race mappings
+            'race': 'race',
+            'ethnicity': 'race',
+            'patient_race': 'race',
+
+            # Stage mappings
+            'stage': 'ajcc_pathologic_stage',
+            'pathologic_stage': 'ajcc_pathologic_stage',
+            'tumor_stage': 'ajcc_pathologic_stage',
+            'ajcc_pathologic_stage': 'ajcc_pathologic_stage',
+
+            # Grade mappings
+            'grade': 'grade',
+            'tumor_grade': 'grade',
+            'histologic_grade': 'grade',
+            'neoplasm_histologic_grade': 'grade',
         }
-        
-        # Create mappings
-        for canonical, aliases in clinical_aliases.items():
-            for alias in aliases:
-                clinical_mappings[alias.upper()] = canonical
-                clinical_mappings[alias.lower()] = canonical
-                clinical_mappings[alias] = canonical
-        
-        self.logger.info(f"📊 Created {len(clinical_mappings)} clinical mappings")
+
         return clinical_mappings
-    
-    def convert_user_data(self, 
+
+    def convert_user_data(self,
                          user_data: pd.DataFrame,
-                         data_type: str = 'auto',
-                         missing_strategy: str = 'special_token') -> Tuple[pd.DataFrame, pd.DataFrame, Dict]:
+                         data_type: str,
+                         cancer_type: Optional[str] = None,
+                         cox_coefficients: Optional[pd.DataFrame] = None,
+                         missing_strategy: str = 'zero'
+                         ) -> Tuple[pd.DataFrame, pd.DataFrame, Dict]:
         """
-        Convert user data to trained model format
-        
+        Convert user data to HybridMultiModalModel format with [value, cox] pairs
+
         Args:
-            user_data: User's input data (samples × features)
-            data_type: 'expression', 'cnv', 'microrna', 'rppa', 'mutations', 'methylation', 'clinical', 'auto'
-            missing_strategy: 'special_token', 'zero', 'mean'
-            
+            user_data: User's input data (samples x features)
+            data_type: 'expression', 'cnv', 'microrna', 'rppa', 'mutations', 'methylation', 'clinical'
+            cancer_type: Cancer type acronym for Cox coefficient lookup (optional)
+            cox_coefficients: DataFrame with Cox coefficients (optional)
+            missing_strategy: 'zero', 'mean', or 'special_token'
+
         Returns:
-            converted_data: Data in trained model format
+            converted_data: Data in [value, cox] pair format (for omics) or processed format
             missing_mask: Boolean mask of missing features
             conversion_report: Report of conversion process
         """
-        self.logger.info("🔄 Converting user data to trained model format...")
-        self.logger.info(f"📊 Input data shape: {user_data.shape}")
-        self.logger.info(f"📊 Data type: {data_type}")
-        
-        # Auto-detect data type if needed
+        self.logger.info(f"Converting {data_type} data to HybridMultiModalModel format...")
+        self.logger.info(f"  Input shape: {user_data.shape}")
+
         if data_type == 'auto':
             data_type = self._detect_data_type(user_data)
-            self.logger.info(f"🎯 Auto-detected data type: {data_type}")
-        
-        # Get trained features for this data type
-        trained_features = self._get_trained_features_for_type(data_type)
-        
-        # Convert feature names
-        converted_data, feature_mapping = self._convert_features(user_data, data_type, trained_features)
-        
+            self.logger.info(f"  Auto-detected type: {data_type}")
+
+        # Get appropriate conversion method
+        if data_type == 'clinical':
+            return self._convert_clinical_data(user_data, missing_strategy)
+        elif data_type == 'methylation':
+            return self._convert_methylation_data(user_data, missing_strategy)
+        else:
+            # Omics data with [value, cox] pairs
+            return self._convert_omics_data(
+                user_data, data_type, cancer_type, cox_coefficients, missing_strategy
+            )
+
+    def _convert_omics_data(self,
+                           user_data: pd.DataFrame,
+                           data_type: str,
+                           cancer_type: Optional[str],
+                           cox_coefficients: Optional[pd.DataFrame],
+                           missing_strategy: str
+                           ) -> Tuple[pd.DataFrame, pd.DataFrame, Dict]:
+        """
+        Convert omics data to [val, cox] pair format
+
+        For each gene/protein/miRNA, creates two columns:
+        - {feature}_val: The transformed measurement value
+        - {feature}_cox: The Cox regression coefficient for this cancer type
+        """
+        n_samples = len(user_data)
+        prefix = self.OMICS_PREFIXES.get(data_type, data_type)
+
+        # Get gene mappings for this type
+        if data_type in ['expression', 'cnv', 'mutations', 'microrna']:
+            mappings = self.gene_mappings.get(data_type, {})
+        elif data_type == 'rppa':
+            mappings = self.protein_mappings
+        else:
+            mappings = {}
+
+        # Get Cox coefficients for cancer type
+        cox_coef_series = None
+        if cox_coefficients is not None and cancer_type is not None:
+            if cancer_type in cox_coefficients.columns:
+                cox_coef_series = cox_coefficients[cancer_type]
+            else:
+                self.logger.warning(f"Cancer type {cancer_type} not found in Cox coefficients")
+
+        # Build [value, cox] pairs
+        converted_columns = {}
+        feature_mapping = {}
+        unmapped_features = []
+
+        for user_col in user_data.columns:
+            # Find matching trained feature
+            mapped_feature = None
+
+            # Try direct mapping
+            if user_col in mappings:
+                mapped_feature = mappings[user_col]
+            elif user_col.upper() in mappings:
+                mapped_feature = mappings[user_col.upper()]
+            elif user_col.lower() in mappings:
+                mapped_feature = mappings[user_col.lower()]
+
+            if mapped_feature:
+                # Create [val, cox] pair
+                val_col_name = f"{prefix}_{mapped_feature}_val"
+                cox_col_name = f"{prefix}_{mapped_feature}_cox"
+
+                # Get values
+                values = user_data[user_col].values.astype(np.float32)
+
+                # Get Cox coefficient
+                cox_coef = 0.0
+                if cox_coef_series is not None:
+                    cox_key = f"{prefix}_{mapped_feature}"
+                    if cox_key in cox_coef_series.index:
+                        cox_coef = float(cox_coef_series[cox_key])
+
+                cox_values = np.full(n_samples, cox_coef, dtype=np.float32)
+
+                converted_columns[val_col_name] = values
+                converted_columns[cox_col_name] = cox_values
+                feature_mapping[user_col] = {
+                    'val_col': val_col_name,
+                    'cox_col': cox_col_name,
+                    'cox_coef': cox_coef
+                }
+            else:
+                unmapped_features.append(user_col)
+
+        # Create DataFrame
+        if converted_columns:
+            converted_data = pd.DataFrame(converted_columns, index=user_data.index)
+        else:
+            converted_data = pd.DataFrame(index=user_data.index)
+
         # Create missing mask
+        trained_features = self.trained_features_by_type.get(data_type, [])
         missing_mask = self._create_missing_mask(converted_data, trained_features)
-        
+
         # Handle missing values
         converted_data = self._handle_missing_values(converted_data, missing_strategy)
-        
-        # Create conversion report
-        conversion_report = {
-            'input_shape': user_data.shape,
-            'output_shape': converted_data.shape,
+
+        # Create report
+        report = {
             'data_type': data_type,
+            'input_features': len(user_data.columns),
             'mapped_features': len(feature_mapping),
-            'missing_features': missing_mask.sum().sum(),
-            'missing_ratio': missing_mask.sum().sum() / (missing_mask.shape[0] * missing_mask.shape[1]),
+            'unmapped_features': len(unmapped_features),
+            'output_columns': len(converted_data.columns),
+            'value_cox_pairs': len(feature_mapping),
+            'missing_strategy': missing_strategy,
+            'cancer_type': cancer_type,
             'feature_mapping': feature_mapping,
-            'missing_strategy': missing_strategy
+            'unmapped': unmapped_features[:10]  # First 10 unmapped
         }
-        
-        self.logger.info("✅ User data conversion completed")
-        self.logger.info(f"📊 Output shape: {converted_data.shape}")
-        self.logger.info(f"📊 Missing ratio: {conversion_report['missing_ratio']:.1%}")
-        
-        return converted_data, missing_mask, conversion_report
-    
+
+        self.logger.info(f"  Mapped: {report['mapped_features']}/{report['input_features']}")
+        self.logger.info(f"  Output: {report['output_columns']} columns ({report['value_cox_pairs']} [value, cox] pairs)")
+
+        return converted_data, missing_mask, report
+
+    def _convert_methylation_data(self,
+                                  user_data: pd.DataFrame,
+                                  missing_strategy: str
+                                  ) -> Tuple[pd.DataFrame, pd.DataFrame, Dict]:
+        """
+        Convert methylation data (no Cox pairing needed)
+
+        Methylation data is processed separately without [value, cox] pairs
+        """
+        # Get trained methylation features
+        trained_meth_features = set(self.trained_features_by_type.get('methylation', []))
+
+        # Map user CpG sites to trained features
+        converted_columns = {}
+        feature_mapping = {}
+
+        for user_col in user_data.columns:
+            if user_col in trained_meth_features:
+                converted_columns[user_col] = user_data[user_col].values.astype(np.float32)
+                feature_mapping[user_col] = user_col
+
+        # Create DataFrame
+        if converted_columns:
+            converted_data = pd.DataFrame(converted_columns, index=user_data.index)
+        else:
+            converted_data = pd.DataFrame(index=user_data.index)
+
+        # Create missing mask
+        missing_mask = self._create_missing_mask(converted_data, list(trained_meth_features))
+
+        # Handle missing values
+        converted_data = self._handle_missing_values(converted_data, missing_strategy, default_fill=0.5)
+
+        # Ensure beta values are in [0, 1]
+        converted_data = converted_data.clip(0, 1)
+
+        report = {
+            'data_type': 'methylation',
+            'input_features': len(user_data.columns),
+            'mapped_features': len(feature_mapping),
+            'output_columns': len(converted_data.columns),
+            'missing_strategy': missing_strategy,
+            'feature_mapping_count': len(feature_mapping)
+        }
+
+        self.logger.info(f"  Mapped: {report['mapped_features']}/{report['input_features']}")
+
+        return converted_data, missing_mask, report
+
+    def _convert_clinical_data(self,
+                               user_data: pd.DataFrame,
+                               missing_strategy: str
+                               ) -> Tuple[pd.DataFrame, pd.DataFrame, Dict]:
+        """
+        Convert clinical data to categorical indices
+
+        Returns categorical indices for: age_group, sex, race, stage, grade
+        """
+        converted_columns = {}
+        feature_mapping = {}
+
+        for user_col in user_data.columns:
+            mapped_col = self.clinical_mappings.get(user_col.lower())
+            if mapped_col:
+                converted_columns[mapped_col] = user_data[user_col]
+                feature_mapping[user_col] = mapped_col
+
+        if converted_columns:
+            converted_data = pd.DataFrame(converted_columns, index=user_data.index)
+        else:
+            converted_data = pd.DataFrame(index=user_data.index)
+
+        # Create missing mask for expected clinical columns
+        expected_clinical = ['age_group', 'sex', 'race', 'ajcc_pathologic_stage', 'grade']
+        missing_mask = pd.DataFrame(
+            {col: col not in converted_data.columns for col in expected_clinical},
+            index=user_data.index
+        )
+
+        report = {
+            'data_type': 'clinical',
+            'input_features': len(user_data.columns),
+            'mapped_features': len(feature_mapping),
+            'missing_strategy': missing_strategy,
+            'feature_mapping': feature_mapping
+        }
+
+        return converted_data, missing_mask, report
+
     def _detect_data_type(self, user_data: pd.DataFrame) -> str:
         """Auto-detect the type of user data"""
-        columns = [col.upper() for col in user_data.columns]
-        
+        columns = [str(col).upper() for col in user_data.columns]
+
         # Check for clinical features
-        clinical_indicators = ['AGE', 'GENDER', 'SEX', 'RACE', 'CANCER', 'TYPE', 'VITAL']
+        clinical_indicators = ['AGE', 'GENDER', 'SEX', 'RACE', 'CANCER', 'STAGE', 'GRADE']
         if any(indicator in ' '.join(columns) for indicator in clinical_indicators):
             return 'clinical'
-        
+
         # Check for methylation (CpG sites)
         if any(col.startswith('CG') for col in columns):
             return 'methylation'
-        
+
         # Check for microRNA
         if any('MIR' in col or 'MIRNA' in col or col.startswith('HSA') for col in columns):
             return 'microrna'
-        
-        # Check for mutations (gene symbols with mutation info)
-        if user_data.dtypes.apply(lambda x: x in ['int64', 'int32', 'bool']).any():
-            return 'mutations'
-        
+
+        # Check for mutations (integer values 0, 1, 2)
+        numeric_data = user_data.select_dtypes(include=[np.number])
+        if not numeric_data.empty:
+            unique_vals = set(numeric_data.values.flatten())
+            unique_vals.discard(np.nan)
+            if unique_vals.issubset({0, 1, 2, 0.0, 1.0, 2.0}):
+                return 'mutations'
+
         # Check for RPPA (protein names, phosphorylation)
-        if any('-' in col or 'P-' in col or '_P' in col for col in columns):
+        if any('-' in col or 'P-' in col.upper() or '_P' in col.upper() for col in columns):
             return 'rppa'
-        
+
         # Default to expression for gene symbols
         return 'expression'
-    
-    def _get_trained_features_for_type(self, data_type: str) -> List[str]:
-        """Get trained features for specific data type"""
-        all_features = self.metadata.get('feature_columns', [])
-        
-        if data_type == 'clinical':
-            clinical_features = self.metadata.get('feature_types', {}).get('clinical', [])
-            return clinical_features
-        else:
-            # Get value and cox features for omics types
-            pattern_map = {
-                'expression': 'expression',
-                'cnv': 'cnv', 
-                'microrna': 'microrna',
-                'rppa': 'rppa',
-                'mutations': 'mutations',
-                'methylation': 'methylation'
-            }
-            
-            # This is simplified - in reality, you'd need to identify which features
-            # belong to which omics type from the feature names
-            return [f for f in all_features if f.endswith('_value') or f.endswith('_cox')]
-    
-    def _convert_features(self, user_data: pd.DataFrame, data_type: str, trained_features: List[str]) -> Tuple[pd.DataFrame, Dict]:
-        """Convert user feature names to trained format"""
-        converted_data = pd.DataFrame(index=user_data.index)
-        feature_mapping = {}
-        
-        if data_type == 'clinical':
-            # Handle clinical features
-            for user_col in user_data.columns:
-                mapped_col = self.clinical_mappings.get(user_col.lower())
-                if mapped_col and mapped_col in trained_features:
-                    converted_data[mapped_col] = user_data[user_col]
-                    feature_mapping[user_col] = mapped_col
-        
-        elif data_type == 'expression':
-            # Expression uses SYMBOL|ENTREZ format
-            for user_col in user_data.columns:
-                mapped = False
-                
-                # Try to find matching gene
-                # User might provide: TP53, 7157, or TP53|7157
-                gene_part = None
-                
-                # Check if user provided symbol
-                gene_part = self.gene_mappings.get(user_col.upper())
-                if not gene_part:
-                    gene_part = self.gene_mappings.get(user_col)
-                if not gene_part and user_col.isdigit():
-                    # User provided Entrez ID
-                    gene_part = self.gene_mappings.get(user_col)
-                
-                if gene_part:
-                    # For Expression, gene_part should be SYMBOL|ENTREZ
-                    value_col = f"Expression_{gene_part}_value"
-                    cox_col = f"Expression_{gene_part}_cox"
-                    
-                    if value_col in trained_features:
-                        converted_data[value_col] = user_data[user_col]
-                        feature_mapping[user_col] = value_col
-                        mapped = True
-                    
-                    if cox_col in trained_features:
-                        converted_data[cox_col] = 0  # Placeholder
-        
-        elif data_type in ['cnv', 'mutations']:
-            # CNV and Mutations use Symbol only
-            prefix = 'CNV_' if data_type == 'cnv' else 'Mutations_'
-            
-            for user_col in user_data.columns:
-                # User provides gene symbol
-                gene_symbol = None
-                
-                # Try different cases
-                gene_symbol = self.gene_mappings.get(user_col.upper())
-                if not gene_symbol:
-                    gene_symbol = self.gene_mappings.get(user_col)
-                if not gene_symbol:
-                    gene_symbol = self.gene_mappings.get(user_col.lower())
-                
-                # For CNV/Mutations, also try direct match
-                if not gene_symbol:
-                    # Maybe user already provided exact format
-                    gene_symbol = user_col
-                
-                if gene_symbol:
-                    value_col = f"{prefix}{gene_symbol}_value"
-                    cox_col = f"{prefix}{gene_symbol}_cox"
-                    
-                    if value_col in trained_features:
-                        converted_data[value_col] = user_data[user_col]
-                        feature_mapping[user_col] = value_col
-                    
-                    if cox_col in trained_features:
-                        converted_data[cox_col] = 0  # Placeholder
-        
-        elif data_type == 'microrna':
-            # microRNA uses specific miRNA names like hsa-mir-21
-            for user_col in user_data.columns:
-                mirna_name = None
-                
-                # Try to find matching miRNA
-                mirna_name = self.gene_mappings.get(user_col.lower())  # miRNAs are usually lowercase
-                if not mirna_name:
-                    mirna_name = self.gene_mappings.get(user_col)
-                if not mirna_name:
-                    mirna_name = self.gene_mappings.get(user_col.upper())
-                
-                # Also try direct match
-                if not mirna_name:
-                    mirna_name = user_col
-                
-                if mirna_name:
-                    value_col = f"microRNA_{mirna_name}_value"
-                    cox_col = f"microRNA_{mirna_name}_cox"
-                    
-                    if value_col in trained_features:
-                        converted_data[value_col] = user_data[user_col]
-                        feature_mapping[user_col] = value_col
-                    
-                    if cox_col in trained_features:
-                        converted_data[cox_col] = 0  # Placeholder
-        
-        elif data_type == 'rppa':
-            # Handle protein features with TCGA RPPA format
-            # TCGA format: RPPA_ProteinName[-phosphoSite]-Vendor-Validation_value/cox
-            
-            for user_col in user_data.columns:
-                mapped = False
-                
-                # First try direct TCGA format mapping
-                # Check if user already provided TCGA format
-                for trained_feature in trained_features:
-                    if trained_feature.startswith('RPPA_') and trained_feature.endswith('_value'):
-                        # Extract protein part from RPPA_XXX_value format
-                        protein_part = trained_feature[5:-6]  # Remove RPPA_ prefix and _value suffix
-                        
-                        # Check if user column matches (ignoring vendor codes)
-                        user_clean = self._clean_protein_name(user_col)
-                        tcga_base = protein_part.split('-')[0] if '-' in protein_part else protein_part
-                        
-                        if user_clean.upper() == tcga_base.upper() or user_col.upper() == tcga_base.upper():
-                            # Found a match - add the value
-                            value_col = trained_feature
-                            cox_col = trained_feature.replace('_value', '_cox')
-                            
-                            if value_col in trained_features:
-                                # If multiple matches exist (different vendor codes), use the first or aggregate
-                                if value_col not in converted_data:
-                                    converted_data[value_col] = user_data[user_col]
-                                    feature_mapping[user_col] = value_col
-                                    
-                                    if cox_col in trained_features:
-                                        converted_data[cox_col] = 0  # Placeholder
-                                    
-                                    mapped = True
-                                    break
-                
-                # If not mapped, try protein mapper
-                if not mapped:
-                    protein_part = self.protein_mappings.get(user_col.upper())
-                    if protein_part:
-                        # Look for any RPPA feature with this protein base
-                        for trained_feature in trained_features:
-                            if trained_feature.startswith(f'RPPA_{protein_part}') and trained_feature.endswith('_value'):
-                                value_col = trained_feature
-                                cox_col = trained_feature.replace('_value', '_cox')
-                                
-                                converted_data[value_col] = user_data[user_col]
-                                feature_mapping[user_col] = value_col
-                                
-                                if cox_col in trained_features:
-                                    converted_data[cox_col] = 0  # Placeholder
-                                
-                                mapped = True
-                                break
-        
-        elif data_type == 'methylation':
-            # Handle methylation probes directly
-            for user_col in user_data.columns:
-                if user_col in trained_features:
-                    converted_data[user_col] = user_data[user_col]
-                    feature_mapping[user_col] = user_col
-        
-        return converted_data, feature_mapping
-    
+
     def _create_missing_mask(self, converted_data: pd.DataFrame, trained_features: List[str]) -> pd.DataFrame:
         """Create missing feature mask"""
+        if not trained_features:
+            return pd.DataFrame(index=converted_data.index, dtype=bool)
+
         missing_mask = pd.DataFrame(
             index=converted_data.index,
             columns=trained_features,
             dtype=bool
         )
-        
-        # Mark existing features as not missing
-        for col in converted_data.columns:
-            if col in missing_mask.columns:
-                missing_mask[col] = converted_data[col].isna()
-        
-        # Mark completely missing features as missing
+
+        # Mark existing features as not missing (unless they have NaN values)
         for col in trained_features:
-            if col not in converted_data.columns:
+            if col in converted_data.columns:
+                missing_mask[col] = converted_data[col].isna()
+            else:
                 missing_mask[col] = True
-        
+
         return missing_mask
-    
-    def _handle_missing_values(self, data: pd.DataFrame, strategy: str) -> pd.DataFrame:
+
+    def _handle_missing_values(self,
+                               data: pd.DataFrame,
+                               strategy: str,
+                               default_fill: float = 0.0) -> pd.DataFrame:
         """Handle missing values according to strategy"""
+        if data.empty:
+            return data
+
         if strategy == 'special_token':
-            return data.fillna(-999)  # Special missing token
+            return data.fillna(-999)
         elif strategy == 'zero':
             return data.fillna(0)
         elif strategy == 'mean':
@@ -495,61 +548,64 @@ class FeatureConverter:
                 if col in means:
                     data[col] = data[col].fillna(means[col])
                 else:
-                    data[col] = data[col].fillna(0)
+                    data[col] = data[col].fillna(default_fill)
             return data
         else:
-            return data
-    
+            return data.fillna(default_fill)
+
     def get_conversion_summary(self, conversion_report: Dict) -> str:
         """Generate human-readable conversion summary"""
         summary = f"""
-🔄 Feature Conversion Summary
-============================
-📊 Input Data: {conversion_report['input_shape'][0]} samples × {conversion_report['input_shape'][1]} features
-📊 Output Data: {conversion_report['output_shape'][0]} samples × {conversion_report['output_shape'][1]} features
-📊 Data Type: {conversion_report['data_type']}
-📊 Mapped Features: {conversion_report['mapped_features']}
-📊 Missing Features: {conversion_report['missing_features']} ({conversion_report['missing_ratio']:.1%})
-📊 Missing Strategy: {conversion_report['missing_strategy']}
+Feature Conversion Summary for HybridMultiModalModel
+=====================================================
+Data Type: {conversion_report.get('data_type', 'Unknown')}
+Input Features: {conversion_report.get('input_features', 0)}
+Mapped Features: {conversion_report.get('mapped_features', 0)}
+Output Columns: {conversion_report.get('output_columns', 0)}
+[value, cox] Pairs: {conversion_report.get('value_cox_pairs', 0)}
+Cancer Type: {conversion_report.get('cancer_type', 'Not specified')}
+Missing Strategy: {conversion_report.get('missing_strategy', 'Unknown')}
 
-🎯 Feature Mapping Examples:
+Mapping Ratio: {conversion_report.get('mapped_features', 0)}/{conversion_report.get('input_features', 0)} ({100*conversion_report.get('mapped_features', 0)/max(1, conversion_report.get('input_features', 1)):.1f}%)
 """
-        
-        # Show first few mappings
-        mappings = conversion_report['feature_mapping']
-        for i, (user_feat, trained_feat) in enumerate(list(mappings.items())[:5]):
-            summary += f"   {user_feat} → {trained_feat}\n"
-        
-        if len(mappings) > 5:
-            summary += f"   ... and {len(mappings) - 5} more\n"
-        
+
+        if conversion_report.get('unmapped'):
+            summary += f"\nUnmapped Features (first 10):\n"
+            for feat in conversion_report['unmapped'][:10]:
+                summary += f"  - {feat}\n"
+
         return summary
+
 
 def main():
     """Example usage"""
     import argparse
-    
-    parser = argparse.ArgumentParser(description='Convert user data features')
+
+    parser = argparse.ArgumentParser(description='Convert user data features for HybridMultiModalModel')
     parser.add_argument('--metadata', required=True, help='Feature metadata JSON file')
     parser.add_argument('--input', required=True, help='User data file')
     parser.add_argument('--output', required=True, help='Output converted data file')
     parser.add_argument('--data-type', default='auto', help='Data type (auto, expression, rppa, etc.)')
-    
+    parser.add_argument('--cancer-type', help='Cancer type for Cox coefficient lookup')
+
     args = parser.parse_args()
-    
+
     # Load user data
     user_data = pd.read_csv(args.input, index_col=0)
-    
+
     # Convert
     converter = FeatureConverter(args.metadata)
-    converted_data, missing_mask, report = converter.convert_user_data(user_data, args.data_type)
-    
+    converted_data, missing_mask, report = converter.convert_user_data(
+        user_data, args.data_type, args.cancer_type
+    )
+
     # Save results
     converted_data.to_csv(args.output)
     missing_mask.to_csv(args.output.replace('.csv', '_missing_mask.csv'))
-    
+
     # Print summary
     print(converter.get_conversion_summary(report))
+
 
 if __name__ == "__main__":
     main()
