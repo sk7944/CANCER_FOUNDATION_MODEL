@@ -25,6 +25,9 @@ cd multiomics_model/src/training && bash run_hybrid_training.sh
 # 데이터 재생성 필요 시
 cd multiomics_model/src/preprocessing && ./run_integrated_dataset_builder.sh
 
+# WSI 전처리 파이프라인 실행
+cd wsi_model/src/preprocessing && ./run_preprocessing.sh
+
 # WSI 모델 훈련 (예정)
 cd wsi_model/src/training && bash run_wsi_training.sh
 ```
@@ -33,20 +36,20 @@ cd wsi_model/src/training && bash run_wsi_training.sh
 
 ## 프로젝트 로드맵
 
-### Phase 1: 데이터 준비 및 전처리 ✅
+### Phase 1: 데이터 준비 및 전처리
 
 | 작업 | 상태 | 설명 |
 |------|------|------|
 | 1-1. 멀티모달 데이터 다운로드 | ✅ 완료 | TCGA Pan-Cancer 데이터 |
 | 1-2. Multi-omics 특성 공학 | ✅ 완료 | Cox 회귀계수 [val, cox] 쌍 |
-| 1-3. 병리영상 전처리 | ⏳ 예정 | WSI 패치 분할 |
+| 1-3. 병리영상 전처리 | ✅ 완료 | WSI 패치 분할 파이프라인 구현 |
 
 ### Phase 2: 단일 모달리티 모델 개발
 
 | 작업 | 상태 | 설명 |
 |------|------|------|
 | 2-1. Multi-omics 모델 | ✅ 완료 | Hybrid FC-NN + TabTransformer |
-| 2-2. 병리영상 모델 | ⏳ 예정 | Swin Transformer (ROI-free) |
+| 2-2. 병리영상 모델 | ⏳ 진행중 | 2-Stage: Swin-T Feature Extractor + MIL |
 
 ### Phase 3: 멀티모달 융합 및 LLM 파인튜닝 (예정)
 
@@ -81,11 +84,19 @@ cd wsi_model/src/training && bash run_wsi_training.sh
 - `methylation_table.parquet`: 8,224 × 396,065
 - `train_val_test_splits.json`: 8,577명 (6,003/1,286/1,288)
 
-### WSI 모델 (Phase 2-2) ⏳ 예정
+### WSI 모델 (Phase 2-2) ⏳ 진행중
 
-- 아키텍처: Swin Transformer
-- 목표: 3년/5년 생존 여부 분류
-- 핵심: ROI 정보 없이, 이미지 전체 레이블로 훈련
+**전처리 파이프라인 (2026-01-14 구현 완료):**
+- 아키텍처: 2-Stage (Swin-T Feature Extraction + MIL Aggregation)
+- 패치 크기: 256×256 @ 20x magnification
+- Stain normalization: Macenko method
+- 특징 추출기: Swin-T (768-dim features)
+- 참고 논문: Wagner et al. Cancer Cell 2023
+
+**현재 데이터 상태:**
+- 다운로드 진행 중: 3개 암종 (BLCA 469개, ACC 96개, BRCA 25개)
+- 총 590개 WSI 파일, 134.5 GB
+- 평균 해상도: ~56,000 x 21,000 픽셀 (1.2 기가픽셀)
 
 ---
 
@@ -97,7 +108,8 @@ CANCER_FOUNDATION_MODEL/
 ├── README.md                    # 프로젝트 소개
 ├── requirements.txt             # 의존성
 ├── doc/                         # 문서
-│   └── TODO_LIST.CFM.pdf        # 프로젝트 로드맵
+│   ├── TODO_LIST.CFM.pdf        # 프로젝트 로드맵
+│   └── Swin_transformer_example.Cancer_Cell.png  # 참고 논문 그림
 │
 ├── multiomics_model/            # 🧬 Multi-omics 모델 (Phase 2-1)
 │   ├── src/
@@ -112,14 +124,21 @@ CANCER_FOUNDATION_MODEL/
 │   └── results/                 # 훈련 결과
 │
 └── wsi_model/                   # 🔬 WSI 모델 (Phase 2-2)
+    ├── requirements.txt         # WSI 의존성
     ├── src/
-    │   ├── models/              # Swin Transformer
+    │   ├── models/              # Swin Transformer + MIL
     │   ├── data/                # WSI Dataset
     │   ├── training/            # 훈련 스크립트
-    │   └── preprocessing/       # WSI 패치 분할
+    │   └── preprocessing/       # WSI 전처리 파이프라인
+    │       ├── tissue_detector.py      # 조직 영역 검출
+    │       ├── patch_extractor.py      # 256x256 패치 추출
+    │       ├── stain_normalizer.py     # Macenko 정규화 + 증강
+    │       ├── feature_extractor.py    # Swin-T 특징 추출
+    │       ├── wsi_preprocessor.py     # 메인 파이프라인
+    │       └── run_preprocessing.sh    # 실행 스크립트
     ├── data/
-    │   ├── raw/                 # WSI 원본 이미지
-    │   └── processed/           # 패치 이미지
+    │   ├── raw/                 # WSI 원본 이미지 (SVS)
+    │   └── processed/           # 특징 벡터 (HDF5)
     └── results/                 # 훈련 결과
 ```
 
@@ -207,28 +226,114 @@ result = pipeline.process_user_data(
 
 ---
 
-## WSI 모델 상세 (예정)
+## WSI 모델 상세
 
-### 계획
+### 참고 논문
+
+**Wagner et al. "Transformer-based biomarker prediction from colorectal cancer histology: A large-scale multicentric study"**
+- Cancer Cell. 2023 Sep 11;41(9):1650-1661
+- 핵심: 2-Stage 파이프라인 (CTransPath + Transformer Aggregation)
+
+### 아키텍처 (2-Stage)
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                        WSI Preprocessing Pipeline                        │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  SVS 파일 (기가픽셀)                                                     │
+│       │                                                                  │
+│       ▼                                                                  │
+│  [Stage 1: 전처리 - 오프라인]                                            │
+│  ├─ TissueDetector: Otsu thresholding, 형태학적 연산                     │
+│  ├─ PatchExtractor: 256x256 패치, 조직비율 80% 필터링                    │
+│  ├─ StainNormalizer: Macenko 정규화                                      │
+│  └─ FeatureExtractor: Swin-T → 768-dim 특징 벡터                         │
+│       │                                                                  │
+│       ▼                                                                  │
+│  HDF5 저장 (WSI당 ~100MB)                                                │
+│       │                                                                  │
+│       ▼                                                                  │
+│  [Stage 2: MIL 훈련 - GPU]                                               │
+│  ├─ 특징 벡터 로드                                                       │
+│  ├─ ABMIL / TransMIL Aggregation                                        │
+│  └─ 3년 생존 예측                                                        │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### 핵심 설정
 
 | 항목 | 값 |
 |------|-----|
-| 아키텍처 | Swin Transformer |
-| 입력 | WSI 패치 (예: 256×256 또는 512×512) |
-| 목표 | 3년/5년 생존 분류 |
-| 핵심 | ROI-free (전체 레이블로 훈련) |
+| 패치 크기 | **256×256** |
+| 조직 비율 threshold | 80% |
+| 블러 threshold | Laplacian variance > 50 |
+| Stain normalization | **Macenko method** |
+| Stain augmentation | 지원 (sigma_alpha=0.2, sigma_beta=0.2) |
+| Feature extractor | Swin-T (768-dim) |
+| 출력 형식 | HDF5 (gzip 압축) |
+| GPU 요구사항 | A6000 (48GB) 충분 |
 
-### 파이프라인 (예정)
+### 핵심 파일
 
 ```
-WSI (고해상도)
-    ↓
-패치 분할 (Phase 1-3)
-    ↓
-Swin Transformer 훈련 (Phase 2-2)
-    ↓
-어텐션 맵 추출 (Phase 4-2)
+wsi_model/src/preprocessing/
+├── __init__.py                 # 패키지 초기화
+├── tissue_detector.py          # 조직 영역 검출 (Otsu, 형태학적 연산)
+├── patch_extractor.py          # 패치 추출 (OpenSlide 기반)
+├── stain_normalizer.py         # Macenko 정규화 + StainAugmentor
+├── feature_extractor.py        # Swin-T/ResNet 특징 추출
+├── wsi_preprocessor.py         # 메인 파이프라인 오케스트레이터
+├── run_preprocessing.sh        # 실행 스크립트
+└── example_usage.py            # 사용 예제
 ```
+
+### 전처리 사용법
+
+```bash
+# 의존성 설치
+pip install -r wsi_model/requirements.txt
+apt-get install openslide-tools  # 시스템 라이브러리
+
+# 전처리 실행
+cd wsi_model/src/preprocessing
+./run_preprocessing.sh --input ../../data/raw --output ../../data/processed
+```
+
+```python
+# Python에서 사용
+from wsi_model.src.preprocessing import WSIPreprocessor
+from wsi_model.src.preprocessing.wsi_preprocessor import PreprocessingConfig
+
+config = PreprocessingConfig(
+    patch_size=256,
+    stain_normalize=True,
+    model_name='swin_tiny',
+)
+
+preprocessor = WSIPreprocessor(
+    output_dir='./data/processed',
+    config=config,
+)
+
+# 단일 WSI 처리
+result = preprocessor.process_wsi('path/to/slide.svs')
+
+# 디렉토리 일괄 처리
+results = preprocessor.process_directory('./data/raw', pattern='*.svs')
+```
+
+### 지원 모델
+
+| 모델 | Feature Dim | 권장 |
+|------|-------------|------|
+| resnet50 | 2048 | 기본 |
+| swin_tiny | 768 | **권장** |
+| swin_small | 768 | |
+| swin_base | 1024 | |
+| vit_base | 768 | |
+| convnext_tiny | 768 | |
 
 ---
 
@@ -255,6 +360,18 @@ assert df[cox_col].nunique() > 1  # 1이면 버그!
 assert len(cox_table) == 4504
 assert len(meth_table) == 8224
 assert len(train) + len(val) + len(test) == 8577
+```
+
+### 4. WSI 전처리 규칙
+```python
+# 패치 크기: 256x256 (Cancer Cell 논문 참고)
+patch_size = 256
+
+# 조직 비율 80% 이상만 사용
+min_tissue_ratio = 0.8
+
+# Stain normalization 필수 (다기관 데이터)
+stain_normalize = True
 ```
 
 ---
@@ -306,6 +423,8 @@ Stage IV, IVA, IVB 등    → 3
 
 ## 훈련 설정
 
+### Multi-omics 모델
+
 ```python
 epochs = 100
 batch_size = 32
@@ -315,6 +434,21 @@ scheduler = ReduceLROnPlateau(patience=5)
 loss = BCEWithLogitsLoss()
 early_stopping = 15 epochs
 clinical_categories = (10, 2, 6, 5, 4)  # age, sex, race, stage, grade
+```
+
+### WSI 전처리 설정
+
+```python
+# PreprocessingConfig 기본값
+patch_size = 256
+patch_level = 0  # 20x magnification
+min_tissue_ratio = 0.8
+blur_threshold = 50.0
+thumbnail_size = 2048
+stain_normalize = True
+stain_augment = False  # 훈련 시 True로 변경
+model_name = 'swin_tiny'
+batch_size = 64
 ```
 
 ---
@@ -390,10 +524,13 @@ clinical_categories = (10, 2, 6, 5, 4)  # age, sex, race, stage, grade
 # Multi-omics 훈련
 cd multiomics_model/src/training && bash run_hybrid_training.sh
 
+# WSI 전처리
+cd wsi_model/src/preprocessing && ./run_preprocessing.sh
+
 # GPU 모니터링
 nvidia-smi -l 1
 
-# 데이터 검증
+# 데이터 검증 (Multi-omics)
 python -c "
 import pandas as pd
 cox = pd.read_parquet('multiomics_model/data/processed/integrated_table_cox.parquet')
@@ -401,6 +538,9 @@ print(f'Shape: {cox.shape}')
 col = [c for c in cox.columns if c.endswith('_cox')][0]
 print(f'Unique cox values: {cox[col].nunique()}')  # Must be > 1
 "
+
+# WSI 파일 확인
+find wsi_model/data/raw -name "*.svs" | wc -l
 ```
 
 ---
@@ -411,6 +551,7 @@ print(f'Unique cox values: {cox[col].nunique()}')  # Must be > 1
 2. **로그 아끼지 않기**: 디버깅을 위한 print문 충분히
 3. **즉시 문서화**: 발견한 문제와 해결책 바로 기록
 4. **출력 데이터 검증**: "에러 없음"이 "올바름"을 의미하지 않음
+5. **문서 누락 방지**: CLAUDE.md 업데이트 시 기존 내용 절대 삭제 금지
 
 ---
 
@@ -424,7 +565,25 @@ print(f'Unique cox values: {cox[col].nunique()}')  # Must be > 1
 | 가정하지 말 것 | 환자 집합 겹침을 가정했다가 실패 |
 | 출력 검증 필수 | 생성된 데이터를 샘플링하여 의도대로인지 확인 |
 | 암종별 값 확인 | Cox 계수가 암종별로 다른지 반드시 검증 |
+| 문서 누락 주의 | CLAUDE.md 수정 시 기존 버그 이력, 교훈 등 반드시 보존 |
+| 논문 참조 중요 | WSI 전처리는 Cancer Cell 2023 논문 접근법 따름 |
+| GPU 메모리 관리 | 체크포인트 저장/로딩 시 CPU 경유 필수 |
 
 ---
 
-*Last updated: 2026-01-13*
+## 참고 자료
+
+### Multi-omics
+- TCGA Pan-Cancer Atlas
+- TabTransformer (tab-transformer-pytorch)
+- Cox proportional hazards regression
+
+### WSI
+- **Wagner et al. Cancer Cell 2023** - Transformer-based biomarker prediction
+- OpenSlide - WSI 읽기 라이브러리
+- Macenko stain normalization - H&E 염색 정규화
+- ABMIL/TransMIL - Multiple Instance Learning
+
+---
+
+*Last updated: 2026-01-14*
