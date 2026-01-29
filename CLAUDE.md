@@ -28,8 +28,8 @@ cd multiomics_model/src/preprocessing && ./run_integrated_dataset_builder.sh
 # WSI 전처리 파이프라인 실행
 cd wsi_model/src/preprocessing && ./run_preprocessing.sh
 
-# WSI 모델 훈련 (예정)
-cd wsi_model/src/training && bash run_wsi_training.sh
+# WSI MIL 모델 훈련
+cd wsi_model/src/training && bash run_mil_training.sh --model abmil --labels /path/to/labels.csv
 ```
 
 ---
@@ -93,10 +93,17 @@ cd wsi_model/src/training && bash run_wsi_training.sh
 - 특징 추출기: Swin-T (768-dim features)
 - 참고 논문: Wagner et al. Cancer Cell 2023
 
+**MIL 모델 구현 (2026-01-29 완료):**
+- ABMIL: Attention-based MIL (295,810 params)
+- TransMIL: Transformer-based MIL with PPEG (1,832,193 params)
+- WSI Dataset/DataLoader 구현
+- 훈련 스크립트 및 CLI 구현
+
 **현재 데이터 상태:**
-- 다운로드 진행 중: 3개 암종 (BLCA 469개, ACC 96개, BRCA 25개)
-- 총 590개 WSI 파일, 134.5 GB
+- 다운로드 완료: **31개 암종**
+- 총 **18,147개 WSI 파일**, 3.7TB
 - 평균 해상도: ~56,000 x 21,000 픽셀 (1.2 기가픽셀)
+- 전처리 진행 중 (로그: `wsi_model/data/processed/logs/`)
 
 ---
 
@@ -126,9 +133,16 @@ CANCER_FOUNDATION_MODEL/
 └── wsi_model/                   # 🔬 WSI 모델 (Phase 2-2)
     ├── requirements.txt         # WSI 의존성
     ├── src/
-    │   ├── models/              # Swin Transformer + MIL
+    │   ├── models/              # MIL 모델
+    │   │   ├── __init__.py
+    │   │   └── mil_model.py            # ABMIL, TransMIL, GatedAttention
     │   ├── data/                # WSI Dataset
+    │   │   ├── __init__.py
+    │   │   └── wsi_dataset.py          # WSIFeatureDataset, WSIDataModule
     │   ├── training/            # 훈련 스크립트
+    │   │   ├── __init__.py
+    │   │   ├── train_mil.py            # MILTrainer, TrainingConfig
+    │   │   └── run_mil_training.sh     # CLI 실행 스크립트
     │   └── preprocessing/       # WSI 전처리 파이프라인
     │       ├── tissue_detector.py      # 조직 영역 검출
     │       ├── patch_extractor.py      # 256x256 패치 추출
@@ -139,6 +153,7 @@ CANCER_FOUNDATION_MODEL/
     ├── data/
     │   ├── raw/                 # WSI 원본 이미지 (SVS)
     │   └── processed/           # 특징 벡터 (HDF5)
+    │       └── logs/            # 전처리 로그
     └── results/                 # 훈련 결과
 ```
 
@@ -324,7 +339,7 @@ result = preprocessor.process_wsi('path/to/slide.svs')
 results = preprocessor.process_directory('./data/raw', pattern='*.svs')
 ```
 
-### 지원 모델
+### 지원 Feature Extractor
 
 | 모델 | Feature Dim | 권장 |
 |------|-------------|------|
@@ -334,6 +349,90 @@ results = preprocessor.process_directory('./data/raw', pattern='*.svs')
 | swin_base | 1024 | |
 | vit_base | 768 | |
 | convnext_tiny | 768 | |
+
+### MIL 모델 상세
+
+| 모델 | 파라미터 수 | 설명 |
+|------|-------------|------|
+| ABMIL | **295,810** | Gated Attention 기반 |
+| TransMIL | **1,832,193** | Transformer + PPEG (2 layers, 8 heads) |
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                        MIL Model Architecture                            │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  HDF5 특징 (num_patches, 768)                                           │
+│       │                                                                  │
+│       ▼                                                                  │
+│  [ABMIL]                          [TransMIL]                             │
+│  ├─ FC: 768 → 256                 ├─ FC: 768 → 256                       │
+│  ├─ GatedAttention                ├─ Transformer (2 layers)              │
+│  │   ├─ Attention_V: 256→128     │   ├─ PPEG (positional encoding)     │
+│  │   └─ Attention_U: 256→128     │   └─ MultiHeadAttention (8 heads)   │
+│  └─ Classifier: 256 → 1          └─ Classifier: 256 → 1                 │
+│       │                                │                                 │
+│       ▼                                ▼                                 │
+│  Attention Weights (num_patches,)  Attention Weights (num_patches,)     │
+│       │                                │                                 │
+│       └────────────────┬───────────────┘                                 │
+│                        ▼                                                 │
+│                  3년 생존 예측                                           │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### MIL 훈련 사용법
+
+```bash
+# ABMIL 모델 훈련
+cd wsi_model/src/training
+./run_mil_training.sh \
+    --model abmil \
+    --features ../../data/processed/features \
+    --labels /path/to/labels.csv \
+    --epochs 100 \
+    --device cuda:0
+
+# TransMIL 모델 훈련
+./run_mil_training.sh --model transmil --labels /path/to/labels.csv
+```
+
+```python
+# Python에서 사용
+from wsi_model.src.training import train_mil_model, TrainingConfig
+
+config = TrainingConfig(
+    model_type='abmil',
+    feature_dim=768,
+    hidden_dim=256,
+    epochs=100,
+    batch_size=1,
+    learning_rate=1e-4,
+    early_stopping_patience=15,
+)
+
+results = train_mil_model(
+    features_dir='./data/processed/features',
+    labels_path='./labels.csv',
+    output_dir='./results',
+    config=config,
+)
+print(f"Test AUC: {results['test_metrics']['auc']:.4f}")
+```
+
+### Labels CSV 형식
+
+```csv
+slide_id,label,patient_id,cancer_type
+TCGA-AA-1234-01Z-00-DX1,0,TCGA-AA-1234,COAD
+TCGA-BB-5678-01Z-00-DX1,1,TCGA-BB-5678,BRCA
+```
+
+- `slide_id`: HDF5 파일명 (확장자 제외)
+- `label`: 0=생존, 1=사망 (3년 기준)
+- `patient_id`: 환자 ID (선택)
+- `cancer_type`: 암종 (선택)
 
 ---
 
@@ -451,6 +550,25 @@ model_name = 'swin_tiny'
 batch_size = 64
 ```
 
+### MIL 모델 훈련 설정
+
+```python
+# TrainingConfig 기본값
+model_type = 'abmil'  # 'abmil' or 'transmil'
+feature_dim = 768
+hidden_dim = 256
+num_classes = 1  # binary classification
+dropout = 0.25
+epochs = 100
+batch_size = 1  # WSI-level
+learning_rate = 1e-4
+weight_decay = 1e-4
+warmup_epochs = 5
+max_patches = 10000  # memory limit
+early_stopping_patience = 15
+use_amp = True  # mixed precision
+```
+
 ---
 
 ## 버그 이력 (치명적)
@@ -524,8 +642,14 @@ batch_size = 64
 # Multi-omics 훈련
 cd multiomics_model/src/training && bash run_hybrid_training.sh
 
-# WSI 전처리
-cd wsi_model/src/preprocessing && ./run_preprocessing.sh
+# WSI 전처리 (백그라운드)
+cd wsi_model/src/preprocessing && ./run_preprocessing_background.sh
+
+# WSI MIL 모델 훈련
+cd wsi_model/src/training && ./run_mil_training.sh --model abmil --labels /path/to/labels.csv
+
+# 전처리 로그 확인
+tail -f wsi_model/data/processed/logs/preprocessing_*.log
 
 # GPU 모니터링
 nvidia-smi -l 1
@@ -541,6 +665,9 @@ print(f'Unique cox values: {cox[col].nunique()}')  # Must be > 1
 
 # WSI 파일 확인
 find wsi_model/data/raw -name "*.svs" | wc -l
+
+# HDF5 특징 파일 확인
+ls wsi_model/data/processed/features/*.h5 | wc -l
 ```
 
 ---
@@ -586,4 +713,4 @@ find wsi_model/data/raw -name "*.svs" | wc -l
 
 ---
 
-*Last updated: 2026-01-14*
+*Last updated: 2026-01-29*
