@@ -34,8 +34,9 @@ LR=1e-4
 MAX_PATCHES=10000
 DEVICE="cuda:0"
 
-# Labels path (needs to be provided or created)
+# Labels and splits paths
 LABELS_PATH=""
+SPLITS_PATH=""
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -50,6 +51,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --labels)
             LABELS_PATH="$2"
+            shift 2
+            ;;
+        --splits)
+            SPLITS_PATH="$2"
             shift 2
             ;;
         --output)
@@ -83,6 +88,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --model TYPE        Model type: abmil or transmil (default: abmil)"
             echo "  --features DIR      Features directory"
             echo "  --labels FILE       Labels CSV file"
+            echo "  --splits FILE       Splits JSON file (optional)"
             echo "  --output DIR        Output directory"
             echo "  --epochs N          Number of epochs (default: 100)"
             echo "  --batch_size N      Batch size (default: 1)"
@@ -135,6 +141,7 @@ echo "=============================================="
 echo "Model:            ${MODEL}"
 echo "Features:         ${FEATURES_DIR}"
 echo "Labels:           ${LABELS_PATH}"
+echo "Splits:           ${SPLITS_PATH:-auto}"
 echo "Output:           ${OUTPUT_DIR}"
 echo "Epochs:           ${EPOCHS}"
 echo "Batch size:       ${BATCH_SIZE}"
@@ -147,6 +154,11 @@ echo "=============================================="
 # Run training
 cd "${PROJECT_ROOT}"
 
+EXTRA_ARGS=""
+if [ -n "${SPLITS_PATH}" ]; then
+    EXTRA_ARGS="--splits ${SPLITS_PATH}"
+fi
+
 python -m wsi_model.src.training.train_mil \
     --features_dir "${FEATURES_DIR}" \
     --labels "${LABELS_PATH}" \
@@ -156,7 +168,8 @@ python -m wsi_model.src.training.train_mil \
     --batch_size "${BATCH_SIZE}" \
     --lr "${LR}" \
     --max_patches "${MAX_PATCHES}" \
-    --device "${DEVICE}"
+    --device "${DEVICE}" \
+    ${EXTRA_ARGS}
 
 echo ""
 echo "=============================================="

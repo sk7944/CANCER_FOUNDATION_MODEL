@@ -110,11 +110,21 @@ class MILTrainer:
             weight_decay=config.weight_decay,
         )
 
-        # Learning rate scheduler
-        self.scheduler = optim.lr_scheduler.CosineAnnealingLR(
+        # Learning rate scheduler: linear warmup + cosine decay
+        warmup_scheduler = optim.lr_scheduler.LinearLR(
             self.optimizer,
-            T_max=config.epochs,
+            start_factor=0.01,
+            total_iters=config.warmup_epochs,
+        )
+        cosine_scheduler = optim.lr_scheduler.CosineAnnealingLR(
+            self.optimizer,
+            T_max=config.epochs - config.warmup_epochs,
             eta_min=config.learning_rate * 0.01,
+        )
+        self.scheduler = optim.lr_scheduler.SequentialLR(
+            self.optimizer,
+            schedulers=[warmup_scheduler, cosine_scheduler],
+            milestones=[config.warmup_epochs],
         )
 
         # Mixed precision
@@ -178,13 +188,27 @@ class MILTrainer:
         return total_loss / num_batches
 
     @torch.no_grad()
-    def evaluate(self, dataloader: DataLoader) -> Dict[str, float]:
-        """Evaluate on validation/test set."""
+    def evaluate(
+        self,
+        dataloader: DataLoader,
+        return_predictions: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Evaluate on validation/test set.
+
+        Args:
+            dataloader: DataLoader to evaluate
+            return_predictions: If True, include per-slide and per-patient predictions
+
+        Returns:
+            Dict with slide-level metrics, patient-level metrics, and optionally predictions
+        """
         self.model.eval()
         total_loss = 0.0
         all_probs = []
         all_labels = []
         all_slide_ids = []
+        all_patient_ids = []
 
         for batch in tqdm(dataloader, desc="Evaluating", leave=False):
             features = batch['features'].to(self.device)
@@ -201,23 +225,64 @@ class MILTrainer:
             all_probs.extend(probs.cpu().numpy())
             all_labels.extend(labels.cpu().numpy())
             all_slide_ids.extend(batch['slide_ids'])
+            all_patient_ids.extend(batch.get('patient_ids', [None] * len(batch['slide_ids'])))
 
         all_probs = np.array(all_probs)
         all_labels = np.array(all_labels)
         all_preds = (all_probs > 0.5).astype(int)
 
-        # Calculate metrics
+        # Slide-level metrics
         metrics = {
             'loss': total_loss / len(dataloader),
             'auc': roc_auc_score(all_labels, all_probs) if len(np.unique(all_labels)) > 1 else 0.0,
             'accuracy': accuracy_score(all_labels, all_preds),
             'f1': f1_score(all_labels, all_preds, zero_division=0),
+            'num_slides': len(all_probs),
         }
 
         # Confusion matrix
         tn, fp, fn, tp = confusion_matrix(all_labels, all_preds, labels=[0, 1]).ravel()
         metrics['sensitivity'] = tp / (tp + fn) if (tp + fn) > 0 else 0.0
         metrics['specificity'] = tn / (tn + fp) if (tn + fp) > 0 else 0.0
+
+        # Patient-level aggregation (mean probability)
+        patient_predictions = {}
+        for i, pid in enumerate(all_patient_ids):
+            if pid is None:
+                continue
+            if pid not in patient_predictions:
+                patient_predictions[pid] = {'probs': [], 'label': int(all_labels[i])}
+            patient_predictions[pid]['probs'].append(float(all_probs[i]))
+
+        if patient_predictions:
+            patient_probs = np.array([np.mean(v['probs']) for v in patient_predictions.values()])
+            patient_labels = np.array([v['label'] for v in patient_predictions.values()])
+            patient_preds = (patient_probs > 0.5).astype(int)
+
+            metrics['patient_auc'] = (
+                roc_auc_score(patient_labels, patient_probs)
+                if len(np.unique(patient_labels)) > 1 else 0.0
+            )
+            metrics['patient_accuracy'] = accuracy_score(patient_labels, patient_preds)
+            metrics['patient_f1'] = f1_score(patient_labels, patient_preds, zero_division=0)
+            metrics['num_patients'] = len(patient_predictions)
+
+        # Optionally return per-slide/patient predictions
+        if return_predictions:
+            metrics['slide_predictions'] = {
+                'slide_ids': all_slide_ids,
+                'patient_ids': all_patient_ids,
+                'probs': all_probs.tolist(),
+                'labels': all_labels.tolist(),
+                'preds': all_preds.tolist(),
+            }
+            if patient_predictions:
+                metrics['patient_predictions'] = {
+                    'patient_ids': list(patient_predictions.keys()),
+                    'probs': patient_probs.tolist(),
+                    'labels': patient_labels.tolist(),
+                    'preds': patient_preds.tolist(),
+                }
 
         return metrics
 
@@ -256,11 +321,13 @@ class MILTrainer:
             self.history['learning_rate'].append(self.scheduler.get_last_lr()[0])
 
             # Log
+            patient_auc_str = f" | Val Patient AUC: {val_metrics['patient_auc']:.4f}" if 'patient_auc' in val_metrics else ""
             logger.info(
                 f"Train Loss: {train_loss:.4f} | "
                 f"Val Loss: {val_metrics['loss']:.4f} | "
                 f"Val AUC: {val_metrics['auc']:.4f} | "
                 f"Val Acc: {val_metrics['accuracy']:.4f}"
+                f"{patient_auc_str}"
             )
 
             # Check for improvement
@@ -418,12 +485,27 @@ def train_mil_model(
     logger.info("\nEvaluating on test set...")
     trainer.load_checkpoint(str(output_dir / 'best_model.pth'))
     test_loader = data_module.test_dataloader()
-    test_metrics = trainer.evaluate(test_loader)
+    test_metrics = trainer.evaluate(test_loader, return_predictions=True)
 
-    logger.info(f"Test AUC: {test_metrics['auc']:.4f}")
-    logger.info(f"Test Accuracy: {test_metrics['accuracy']:.4f}")
+    logger.info(f"Test Slide AUC: {test_metrics['auc']:.4f}")
+    logger.info(f"Test Slide Accuracy: {test_metrics['accuracy']:.4f}")
     logger.info(f"Test Sensitivity: {test_metrics['sensitivity']:.4f}")
     logger.info(f"Test Specificity: {test_metrics['specificity']:.4f}")
+    if 'patient_auc' in test_metrics:
+        logger.info(f"Test Patient AUC: {test_metrics['patient_auc']:.4f}")
+        logger.info(f"Test Patients: {test_metrics['num_patients']}, Slides: {test_metrics['num_slides']}")
+
+    # Save predictions separately (can be large)
+    predictions = {}
+    if 'slide_predictions' in test_metrics:
+        predictions['slide_predictions'] = test_metrics.pop('slide_predictions')
+    if 'patient_predictions' in test_metrics:
+        predictions['patient_predictions'] = test_metrics.pop('patient_predictions')
+    if predictions:
+        preds_path = output_dir / 'test_predictions.json'
+        with open(preds_path, 'w') as f:
+            json.dump(predictions, f, indent=2)
+        logger.info(f"Predictions saved to {preds_path}")
 
     # Save test results
     results['test_metrics'] = test_metrics

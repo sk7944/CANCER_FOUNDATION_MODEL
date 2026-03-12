@@ -225,6 +225,10 @@ class WSIPreprocessor:
 
         try:
             # Step 1: Open slide and get thumbnail
+            if self.patch_extractor is None:
+                raise RuntimeError(
+                    "OpenSlide not available. Install with: apt-get install openslide-tools && pip install openslide-python"
+                )
             slide = self.patch_extractor.open_slide(slide_path)
             thumbnail, scale_factor = self.patch_extractor.get_thumbnail(
                 slide, self.config.thumbnail_size
@@ -268,8 +272,9 @@ class WSIPreprocessor:
                     if self.stain_normalizer is not None:
                         try:
                             patch_image = self.stain_normalizer.normalize(patch_image)
-                        except Exception:
-                            pass  # Keep original if normalization fails
+                        except (ValueError, RuntimeError, np.linalg.LinAlgError) as e:
+                            logger.debug(f"Stain normalization failed for patch ({patch_info.x}, {patch_info.y}): {e}")
+                            # Keep original if normalization fails
 
                     patches.append(patch_image)
                     valid_coords.append([patch_info.x, patch_info.y])

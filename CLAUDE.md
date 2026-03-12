@@ -28,8 +28,13 @@ cd multiomics_model/src/preprocessing && ./run_integrated_dataset_builder.sh
 # WSI 전처리 파이프라인 실행
 cd wsi_model/src/preprocessing && ./run_preprocessing.sh
 
+# WSI Labels 생성 (최초 1회)
+cd wsi_model/src/data && python generate_wsi_labels.py
+
 # WSI MIL 모델 훈련
-cd wsi_model/src/training && bash run_mil_training.sh --model abmil --labels /path/to/labels.csv
+cd wsi_model/src/training && bash run_mil_training.sh --model abmil \
+    --labels ../../data/processed/wsi_labels.csv \
+    --splits ../../data/processed/wsi_splits.json
 ```
 
 ---
@@ -84,9 +89,9 @@ cd wsi_model/src/training && bash run_mil_training.sh --model abmil --labels /pa
 - `methylation_table.parquet`: 8,224 × 396,065
 - `train_val_test_splits.json`: 8,577명 (6,003/1,286/1,288)
 
-### WSI 모델 (Phase 2-2) ⏳ 진행중
+### WSI 모델 (Phase 2-2) ⏳ 진행중 (훈련 대기)
 
-**전처리 파이프라인 (2026-01-14 구현 완료):**
+**전처리 파이프라인 (2026-01-14 구현, 2026-03-12 완료):**
 - 아키텍처: 2-Stage (Swin-T Feature Extraction + MIL Aggregation)
 - 패치 크기: 256×256 @ 20x magnification
 - Stain normalization: Macenko method
@@ -96,14 +101,24 @@ cd wsi_model/src/training && bash run_mil_training.sh --model abmil --labels /pa
 **MIL 모델 구현 (2026-01-29 완료):**
 - ABMIL: Attention-based MIL (295,810 params)
 - TransMIL: Transformer-based MIL with PPEG (1,832,193 params)
-- WSI Dataset/DataLoader 구현
-- 훈련 스크립트 및 CLI 구현
+- WSI Dataset/DataLoader 구현 (환자 단위 split 지원)
+- 훈련 스크립트 및 CLI 구현 (환자 단위 예측 집계 지원)
 
-**현재 데이터 상태:**
-- 다운로드 완료: **31개 암종**
-- 총 **18,147개 WSI 파일**, 3.7TB
-- 평균 해상도: ~56,000 x 21,000 픽셀 (1.2 기가픽셀)
-- 전처리 진행 중 (로그: `wsi_model/data/processed/logs/`)
+**WSI Labels 생성 (2026-03-12 완료):**
+- Primary Tumor(01) 필터링 적용
+- 3년 생존 라벨 (multi-omics와 동일 기준: 1095.75일)
+- 환자 단위 split (multi-omics splits와 정합)
+- 출력: `wsi_model/data/processed/wsi_labels.csv`, `wsi_model/data/processed/wsi_splits.json`
+
+**데이터 상태 (2026-03-12 확인):**
+- 다운로드 완료: **31개 암종**, 총 **18,147개 WSI 파일**, 3.7TB
+- 전처리 완료: **16,184개 H5 특징 파일** (성공률 89.2%)
+- 실패: 1,963개 (손상/빈 슬라이드 등)
+- 전체: 10,206 환자 → 12,131 샘플 → 16,184 슬라이드
+- Labels 대상: **7,700 슬라이드** (5,395 환자, Primary Tumor + 임상정보 매칭)
+  - Label 0 (생존): 4,364 / Label 1 (사망): 3,336 (양성 비율 ~43%)
+  - Train: 5,379 slides (3,761 patients) / Val: 1,154 (805) / Test: 1,167 (829)
+- Multi-omics 겹치는 환자: 7,897명 (Phase 3 융합 대상)
 
 ---
 
@@ -138,7 +153,8 @@ CANCER_FOUNDATION_MODEL/
     │   │   └── mil_model.py            # ABMIL, TransMIL, GatedAttention
     │   ├── data/                # WSI Dataset
     │   │   ├── __init__.py
-    │   │   └── wsi_dataset.py          # WSIFeatureDataset, WSIDataModule
+    │   │   ├── wsi_dataset.py          # WSIFeatureDataset, WSIDataModule
+    │   │   └── generate_wsi_labels.py  # Labels CSV + Splits JSON 생성
     │   ├── training/            # 훈련 스크립트
     │   │   ├── __init__.py
     │   │   ├── train_mil.py            # MILTrainer, TrainingConfig
@@ -382,20 +398,57 @@ results = preprocessor.process_directory('./data/raw', pattern='*.svs')
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
+### MIL 훈련 전략
+
+**2-Stage 파이프라인 구조:**
+- Stage 1 (전처리, 완료): Swin-T로 768-dim 특징 추출 → H5 저장 (고정, 변경 불가)
+- Stage 2 (훈련): H5 특징 로드 → **Aggregation 모델 선택** → 3년 생존 예측
+
+Stage 2에서 선택하는 것은 Aggregation 방법뿐이며, Feature Extractor는 전처리에서 이미 고정됨.
+
+**모델 비교 전략:**
+
+| 순서 | 모델 | 목적 |
+|------|------|------|
+| 1차 | **ABMIL** (baseline) | 파이프라인 검증 + baseline AUC 확보 |
+| 2차 | **TransMIL** | ABMIL 대비 개선 확인 |
+| 최종 | 둘 중 Test AUC 높은 모델 선택 | Patient-level AUC 기준 비교 |
+
+- ABMIL을 먼저 돌리는 이유: 파라미터가 적어(295K) 과적합 위험이 낮고, 빠르게 수렴하므로 데이터 파이프라인이 정상인지 검증 가능
+- TransMIL은 패치 간 상호작용(self-attention)을 학습하므로, 조직 미세환경의 공간적 맥락이 중요한 생존 예측에 유리할 수 있으나 파라미터가 6.2배(1.83M) 많아 데이터 부족 시 과적합 위험
+
+**ABMIL vs TransMIL 핵심 차이:**
+- ABMIL: 각 패치를 **독립적으로** 중요도 평가 (패치 간 상호작용 없음)
+- TransMIL: 패치끼리 **self-attention으로 문맥 교환** 후 CLS 토큰으로 집계 (종양-기질-면역세포 공간 패턴 학습 가능)
+
+**LR Schedule:**
+- Linear warmup (5 epochs, lr×0.01 → lr) + Cosine decay (나머지 epochs)
+- Wagner et al. Cancer Cell 2023 논문과 동일 전략
+
+**다중 슬라이드 전략:**
+- 훈련: 같은 환자의 여러 슬라이드를 독립 샘플로 취급 (데이터 증강 효과)
+- 평가: 환자 단위 mean probability aggregation → patient-level AUC/Accuracy/F1 보고
+- 모델 선택 기준: **Patient-level AUC** (slide-level보다 임상적으로 의미 있는 지표)
+
+**자동 비교 스크립트는 미구현** — 각 모델을 수동으로 실행 후 results.json 비교
+
 ### MIL 훈련 사용법
 
 ```bash
-# ABMIL 모델 훈련
+# ABMIL 모델 훈련 (1차 — baseline)
 cd wsi_model/src/training
 ./run_mil_training.sh \
     --model abmil \
     --features ../../data/processed/features \
-    --labels /path/to/labels.csv \
+    --labels ../../data/processed/wsi_labels.csv \
+    --splits ../../data/processed/wsi_splits.json \
     --epochs 100 \
     --device cuda:0
 
 # TransMIL 모델 훈련
-./run_mil_training.sh --model transmil --labels /path/to/labels.csv
+./run_mil_training.sh --model transmil \
+    --labels ../../data/processed/wsi_labels.csv \
+    --splits ../../data/processed/wsi_splits.json
 ```
 
 ```python
@@ -423,16 +476,33 @@ print(f"Test AUC: {results['test_metrics']['auc']:.4f}")
 
 ### Labels CSV 형식
 
+파일: `wsi_model/data/processed/wsi_labels.csv` (생성 완료)
+
 ```csv
-slide_id,label,patient_id,cancer_type
-TCGA-AA-1234-01Z-00-DX1,0,TCGA-AA-1234,COAD
-TCGA-BB-5678-01Z-00-DX1,1,TCGA-BB-5678,BRCA
+slide_id,label,patient_id,cancer_type,split
+TCGA-02-0001-01C-01-BS1.UUID,1,TCGA-02-0001,GBM,train
+TCGA-AA-1234-01Z-00-DX1.UUID,0,TCGA-AA-1234,COAD,val
 ```
 
-- `slide_id`: HDF5 파일명 (확장자 제외)
-- `label`: 0=생존, 1=사망 (3년 기준)
-- `patient_id`: 환자 ID (선택)
-- `cancer_type`: 암종 (선택)
+- `slide_id`: HDF5 파일명 (확장자 제외), TCGA 바코드 + UUID
+- `label`: 0=생존, 1=사망 (3년 기준, 1095.75일)
+- `patient_id`: TCGA 바코드 첫 3파트 (TCGA-XX-XXXX)
+- `cancer_type`: 암종 코드
+- `split`: train/val/test (환자 단위, multi-omics splits와 정합)
+
+**TCGA 바코드 구조**: `TCGA-XX-XXXX-SSP-PP-SLS.UUID`
+- patient_id = 첫 3파트 (TCGA-XX-XXXX)
+- sample_type = 4번째 파트 앞 2자리 (01=Primary Tumor, 11=Normal, 06=Metastatic)
+- Labels에는 **sample_type 01 (Primary Solid Tumor)만** 포함
+
+**다중 슬라이드 전략**:
+- 훈련: 독립 개체로 취급 (데이터 증강 효과)
+- 평가: 환자 단위 mean probability aggregation → patient-level AUC/Accuracy/F1
+
+**Splits JSON**: `wsi_model/data/processed/wsi_splits.json`
+- `train_patients`/`val_patients`/`test_patients` + `train_slides`/`val_slides`/`test_slides`
+
+**Labels 재생성**: `cd wsi_model/src/data && python generate_wsi_labels.py`
 
 ---
 
@@ -471,6 +541,18 @@ min_tissue_ratio = 0.8
 
 # Stain normalization 필수 (다기관 데이터)
 stain_normalize = True
+```
+
+### 5. WSI 훈련 규칙
+```python
+# Primary Tumor(01)만 훈련 (generate_wsi_labels.py에서 필터링 완료)
+assert all(s.split('-')[3][:2] == '01' for s in df.slide_id.str.split('.').str[0])
+
+# 환자 단위 split (data leakage 방지)
+# 같은 환자의 다중 슬라이드는 반드시 동일 split에 배정
+
+# 평가 시 환자 단위 집계
+# train_mil.py의 evaluate()에서 patient-level mean aggregation 수행
 ```
 
 ---
@@ -563,10 +645,14 @@ epochs = 100
 batch_size = 1  # WSI-level
 learning_rate = 1e-4
 weight_decay = 1e-4
-warmup_epochs = 5
-max_patches = 10000  # memory limit
-early_stopping_patience = 15
-use_amp = True  # mixed precision
+warmup_epochs = 5  # linear warmup (lr*0.01 → lr)
+max_patches = 10000  # memory limit, per-sample seed로 재현성 보장
+early_stopping_patience = 15  # Val AUC 기준
+use_amp = True  # mixed precision (GradScaler)
+optimizer = AdamW
+scheduler = LinearLR(warmup 5ep) + CosineAnnealingLR(나머지)  # SequentialLR
+loss = BCEWithLogitsLoss
+grad_clip = 1.0  # max_norm
 ```
 
 ---
@@ -634,6 +720,27 @@ use_amp = True  # mixed precision
 - **원인**: Cox 환자만 splits에 포함
 - **수정**: Union 기반 splits, 키 이름 `train_patients` 사용
 
+### [2026-03-12] WSI 전처리 버그 3건 수정
+
+**1. OpenSlide null 가드 누락** (`wsi_preprocessor.py:228`)
+- **증상**: OpenSlide 미설치 환경에서 `AttributeError: 'NoneType'`
+- **수정**: `process_wsi()` 진입 시 `self.patch_extractor is None` 체크 + RuntimeError
+
+**2. 패치 서브샘플링 재현성** (`wsi_dataset.py:104`)
+- **증상**: `max_patches` 적용 시 매 에폭마다 다른 패치 선택 (비결정적)
+- **수정**: `np.random.RandomState(seed=hash(slide_id) % (2**32))` per-sample seed
+
+**3. Stain normalization 예외 처리** (`wsi_preprocessor.py:269-272`)
+- **증상**: bare `except:` 절이 KeyboardInterrupt 등 시스템 예외도 삼킴
+- **수정**: `except (ValueError, RuntimeError, np.linalg.LinAlgError)` 로 구체화
+
+### [2026-03-12] processing_results.json 데이터 소실
+
+- **증상**: 16,184개 슬라이드를 처리했으나 `processing_results.json`에 70개만 기록
+- **원인**: `_save_results()` 메서드가 `open(path, 'w')`로 전체 파일을 덮어씀. 파이프라인 재실행 시 `results = []`로 초기화되어 이전 결과 전부 소실. 마지막 실행 배치(~70개)만 남음
+- **조치**: 해당 파일 삭제 (실제 결과는 H5 파일 16,184개로 디스크에 온전)
+- **교훈**: 증분 로그는 append 모드 또는 기존 파일 로드 후 병합해야 함
+
 ---
 
 ## 자주 쓰는 명령어
@@ -646,7 +753,12 @@ cd multiomics_model/src/training && bash run_hybrid_training.sh
 cd wsi_model/src/preprocessing && ./run_preprocessing_background.sh
 
 # WSI MIL 모델 훈련
-cd wsi_model/src/training && ./run_mil_training.sh --model abmil --labels /path/to/labels.csv
+cd wsi_model/src/training && ./run_mil_training.sh --model abmil \
+    --labels ../../data/processed/wsi_labels.csv \
+    --splits ../../data/processed/wsi_splits.json
+
+# WSI Labels 재생성
+cd wsi_model/src/data && python generate_wsi_labels.py
 
 # 전처리 로그 확인
 tail -f wsi_model/data/processed/logs/preprocessing_*.log
@@ -695,6 +807,9 @@ ls wsi_model/data/processed/features/*.h5 | wc -l
 | 문서 누락 주의 | CLAUDE.md 수정 시 기존 버그 이력, 교훈 등 반드시 보존 |
 | 논문 참조 중요 | WSI 전처리는 Cancer Cell 2023 논문 접근법 따름 |
 | GPU 메모리 관리 | 체크포인트 저장/로딩 시 CPU 경유 필수 |
+| 로그 파일 덮어쓰기 주의 | `open('w')`로 증분 로그를 쓰면 재실행 시 이전 결과 소실 |
+| Primary Tumor 필터링 필수 | WSI 훈련 시 sample_type 01만 사용 (Normal/Metastatic 제외) |
+| 환자 단위 split 필수 | 같은 환자의 다중 슬라이드가 서로 다른 split에 가면 data leakage |
 
 ---
 
@@ -713,4 +828,4 @@ ls wsi_model/data/processed/features/*.h5 | wc -l
 
 ---
 
-*Last updated: 2026-01-29*
+*Last updated: 2026-03-12*

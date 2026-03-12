@@ -99,9 +99,10 @@ class WSIFeatureDataset(Dataset):
             else:
                 coordinates = None
 
-        # Subsample if too many patches
+        # Subsample if too many patches (per-sample seed for reproducibility)
         if self.max_patches is not None and len(features) > self.max_patches:
-            indices = np.random.choice(len(features), self.max_patches, replace=False)
+            rng = np.random.RandomState(seed=hash(slide_id) % (2**32))
+            indices = rng.choice(len(features), self.max_patches, replace=False)
             features = features[indices]
             if coordinates is not None:
                 coordinates = coordinates[indices]
@@ -230,9 +231,20 @@ class WSIDataModule:
         if splits_path and os.path.exists(splits_path):
             with open(splits_path, 'r') as f:
                 splits = json.load(f)
-            self.train_ids = set(splits['train'])
-            self.val_ids = set(splits['val'])
-            self.test_ids = set(splits['test'])
+
+            if 'train_slides' in splits:
+                # New format: slide-level keys
+                self.train_ids = set(splits['train_slides'])
+                self.val_ids = set(splits['val_slides'])
+                self.test_ids = set(splits['test_slides'])
+            elif 'train_patients' in splits:
+                # Patient-level keys: expand to slide IDs
+                self._expand_patient_splits(splits)
+            else:
+                # Legacy format
+                self.train_ids = set(splits['train'])
+                self.val_ids = set(splits['val'])
+                self.test_ids = set(splits['test'])
         else:
             self._create_splits(train_ratio, val_ratio)
 
@@ -246,24 +258,69 @@ class WSIDataModule:
         print(f"  Val: {len(self.val_df)} slides")
         print(f"  Test: {len(self.test_df)} slides")
 
+    def _expand_patient_splits(self, splits: dict):
+        """Expand patient-level splits to slide-level using labels_df."""
+        if 'patient_id' not in self.labels_df.columns:
+            raise ValueError(
+                "labels_df must have 'patient_id' column to use patient-level splits"
+            )
+
+        train_patients = set(splits['train_patients'])
+        val_patients = set(splits['val_patients'])
+        test_patients = set(splits['test_patients'])
+
+        self.train_ids = set(
+            self.labels_df[self.labels_df['patient_id'].isin(train_patients)]['slide_id']
+        )
+        self.val_ids = set(
+            self.labels_df[self.labels_df['patient_id'].isin(val_patients)]['slide_id']
+        )
+        self.test_ids = set(
+            self.labels_df[self.labels_df['patient_id'].isin(test_patients)]['slide_id']
+        )
+
     def _create_splits(
         self,
         train_ratio: float,
         val_ratio: float,
     ):
-        """Create random train/val/test splits."""
+        """Create patient-level random train/val/test splits, expanded to slides."""
         np.random.seed(self.seed)
 
-        all_ids = self.labels_df['slide_id'].unique().tolist()
-        np.random.shuffle(all_ids)
+        if 'patient_id' in self.labels_df.columns:
+            # Patient-level split to prevent data leakage
+            all_patients = self.labels_df['patient_id'].unique().tolist()
+            np.random.shuffle(all_patients)
 
-        n = len(all_ids)
-        n_train = int(n * train_ratio)
-        n_val = int(n * val_ratio)
+            n = len(all_patients)
+            n_train = int(n * train_ratio)
+            n_val = int(n * val_ratio)
 
-        self.train_ids = set(all_ids[:n_train])
-        self.val_ids = set(all_ids[n_train:n_train + n_val])
-        self.test_ids = set(all_ids[n_train + n_val:])
+            train_patients = set(all_patients[:n_train])
+            val_patients = set(all_patients[n_train:n_train + n_val])
+            test_patients = set(all_patients[n_train + n_val:])
+
+            self.train_ids = set(
+                self.labels_df[self.labels_df['patient_id'].isin(train_patients)]['slide_id']
+            )
+            self.val_ids = set(
+                self.labels_df[self.labels_df['patient_id'].isin(val_patients)]['slide_id']
+            )
+            self.test_ids = set(
+                self.labels_df[self.labels_df['patient_id'].isin(test_patients)]['slide_id']
+            )
+        else:
+            # Fallback: slide-level split
+            all_ids = self.labels_df['slide_id'].unique().tolist()
+            np.random.shuffle(all_ids)
+
+            n = len(all_ids)
+            n_train = int(n * train_ratio)
+            n_val = int(n * val_ratio)
+
+            self.train_ids = set(all_ids[:n_train])
+            self.val_ids = set(all_ids[n_train:n_train + n_val])
+            self.test_ids = set(all_ids[n_train + n_val:])
 
     def save_splits(self, output_path: str):
         """Save splits to JSON file."""
